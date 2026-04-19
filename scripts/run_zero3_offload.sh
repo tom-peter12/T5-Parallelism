@@ -17,6 +17,7 @@ EPOCHS="${EPOCHS:-1}"
 PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE:-1}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-8}"
 GRAD_ACCUM="${GRAD_ACCUM:-16}"
+OPTIMIZER="${OPTIMIZER:-adamw_torch}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 MAX_SOURCE_LENGTH="${MAX_SOURCE_LENGTH:-192}"
 MAX_TARGET_LENGTH="${MAX_TARGET_LENGTH:-8}"
@@ -46,6 +47,7 @@ torchrun \
     --per-device-batch-size "${PER_DEVICE_BATCH_SIZE}" \
     --eval-batch-size "${EVAL_BATCH_SIZE}" \
     --grad-accum "${GRAD_ACCUM}" \
+    --optim "${OPTIMIZER}" \
     --num-workers "${NUM_WORKERS}" \
     --max-source-length "${MAX_SOURCE_LENGTH}" \
     --max-target-length "${MAX_TARGET_LENGTH}" \
