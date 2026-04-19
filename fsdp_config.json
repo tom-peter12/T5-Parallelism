@@ -7,5 +7,5 @@
   "limit_all_gathers": true,
   "use_orig_params": true,
   "sync_module_states": true,
-  "activation_checkpointing": false
+  "activation_checkpointing": true
 }
