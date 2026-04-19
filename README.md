@@ -64,7 +64,7 @@ Suggested starting points:
 
 - `DDP`: batch `1`, grad accum `16`, optimizer `adafactor`
 - `FSDP`: batch `1`, grad accum `16`
-- `ZeRO-2`: batch `2`, grad accum `8`
+- `ZeRO-2`: batch `1`, grad accum `16`
 - `ZeRO-3`: batch `1`, grad accum `16`
 - `ZeRO-3 Offload`: batch `1`, grad accum `16`
 
