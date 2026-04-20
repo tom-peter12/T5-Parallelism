@@ -82,7 +82,7 @@ On node 0:
 ssh ws-lx-xxy
 conda activate <env>
 export HOSTS="ws-lx-xxy ws-lx-xxz"
-bash scripts/run_trainer.sh ws-lx-xxz 0
+bash scripts/run_trainer.sh ws-lx-xxy 0
 ```
 
 On node 1:
@@ -91,16 +91,16 @@ On node 1:
 ssh ws-lx-xxz
 conda activate <env>
 export HOSTS="ws-lx-xxy ws-lx-xxz"
-bash scripts/run_trainer.sh ws-lx-xxz 1
+bash scripts/run_trainer.sh ws-lx-xxy 1
 ```
 
 Use the same pattern for the other strategies:
 
 ```bash
-bash scripts/run_fsdp.sh ws-lx-xxz <node_rank>
-bash scripts/run_zero2.sh ws-lx-xxz <node_rank>
-bash scripts/run_zero3.sh ws-lx-xxz <node_rank>
-bash scripts/run_zero3_offload.sh ws-lx-xxz <node_rank>
+bash scripts/run_fsdp.sh ws-lx-xxy <node_rank>
+bash scripts/run_zero2.sh ws-lx-xxy <node_rank>
+bash scripts/run_zero3.sh ws-lx-xxy <node_rank>
+bash scripts/run_zero3_offload.sh ws-lx-xxy <node_rank>
 ```
 
 ## Useful Overrides
