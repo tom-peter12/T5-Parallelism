@@ -39,7 +39,7 @@ def build_training_args(args):
         "save_total_limit": args.save_total_limit,
         "dataloader_num_workers": args.num_workers,
         "dataloader_pin_memory": True,
-        "report_to": [],
+        "report_to": ["wandb"] if args.wandb_project else [],
         "bf16": args.bf16,
         "fp16": args.fp16,
         "gradient_checkpointing": args.gradient_checkpointing,
@@ -119,6 +119,10 @@ def parse_args():
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--fsdp", action="store_true")
     parser.add_argument("--resume-from-checkpoint", type=str, default="")
+    # W&B tracking
+    parser.add_argument("--wandb-entity", type=str, default="t5_mlsys")
+    parser.add_argument("--wandb-project", type=str, default="deepseed")
+    parser.add_argument("--wandb-run-name", type=str, default="")
     return parser.parse_args()
 
 
@@ -148,6 +152,12 @@ def main():
     args = parse_args()
     set_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
+
+    if args.wandb_project:
+        os.environ["WANDB_ENTITY"] = args.wandb_entity
+        os.environ["WANDB_PROJECT"] = args.wandb_project
+        if args.wandb_run_name:
+            os.environ["WANDB_NAME"] = args.wandb_run_name
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True)
     model = T5ForConditionalGeneration.from_pretrained(args.model_name)

@@ -166,6 +166,56 @@ bash scripts/run_zero3_offload.sh ws-lx-xxy <node_rank>   # ZeRO-3 + CPU offload
 
 ---
 
+## W&B Tracking
+
+All launch scripts have W&B tracking **enabled by default**. Runs are automatically logged to the `t5_mlsys` entity under the `deepseed` project, with a run name derived from the strategy and task (e.g., `ddp-sst2`, `fsdp-sst2`, `zero3-offload-mrpc`).
+
+### Setup
+
+```bash
+pip install wandb
+wandb login   # paste your API key from https://wandb.ai/authorize
+```
+
+### Defaults
+
+| Variable | Default | Description |
+|---|---|---|
+| `WANDB_ENTITY` | `t5_mlsys` | W&B team / entity |
+| `WANDB_PROJECT` | `deepseed` | W&B project name |
+| `WANDB_RUN_NAME` | `<strategy>-<task>` | Auto-named per script (e.g. `zero3-sst2`) |
+
+### Overriding
+
+```bash
+export WANDB_PROJECT=my-project
+export WANDB_RUN_NAME=custom-run-name
+bash scripts/run_zero3.sh ws-lx-xxy 0
+```
+
+### Disabling W&B
+
+```bash
+export WANDB_PROJECT=""
+bash scripts/run_trainer.sh ws-lx-xxy 0
+```
+
+### What Gets Logged
+
+The HuggingFace Trainer reports the following to W&B automatically:
+
+| Metric | Description |
+|---|---|
+| `train/loss` | Training loss per step |
+| `train/learning_rate` | LR schedule |
+| `train/samples_per_second` | Throughput |
+| `train/steps_per_second` | Step rate |
+| `eval/loss` | Eval loss per epoch |
+| `eval/accuracy` | Exact-match accuracy |
+| `eval/runtime` | Eval wall-clock time |
+
+---
+
 ## What Gets Measured
 
 After each run, the trainer saves the following to `OUTPUT_DIR`:

@@ -71,4 +71,7 @@ print_summary() {
   echo "grad_accum  : ${GRAD_ACCUM}"
   echo "train_sub   : ${MAX_TRAIN_SAMPLES}"
   echo "eval_sub    : ${MAX_EVAL_SAMPLES}"
+  echo "wandb_entity: ${WANDB_ENTITY:-t5_mlsys}"
+  echo "wandb_proj  : ${WANDB_PROJECT:-deepseed}"
+  echo "wandb_run   : ${WANDB_RUN_NAME:-(auto)}"
 }
