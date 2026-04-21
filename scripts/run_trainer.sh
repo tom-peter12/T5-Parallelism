@@ -26,6 +26,9 @@ MAX_EVAL_SAMPLES="${MAX_EVAL_SAMPLES:-1000}"
 PRECISION_FLAG="${PRECISION_FLAG:---bf16}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:---gradient-checkpointing}"
 OPTIMIZER="${OPTIMIZER:-adafactor}"
+WANDB_ENTITY="${WANDB_ENTITY:-t5_mlsys}"
+WANDB_PROJECT="${WANDB_PROJECT:-deepseed}"
+WANDB_RUN_NAME="${WANDB_RUN_NAME:-ddp-${TASK_NAME}}"
 
 echo "=== T5 Trainer / DDP Baseline ==="
 print_summary
@@ -52,5 +55,8 @@ torchrun \
     --generation-max-length "${GENERATION_MAX_LENGTH}" \
     --max-train-samples "${MAX_TRAIN_SAMPLES}" \
     --max-eval-samples "${MAX_EVAL_SAMPLES}" \
+    --wandb-entity "${WANDB_ENTITY}" \
+    --wandb-project "${WANDB_PROJECT}" \
+    --wandb-run-name "${WANDB_RUN_NAME}" \
     ${GRADIENT_CHECKPOINTING} \
     ${PRECISION_FLAG}

@@ -5,3 +5,4 @@ deepspeed
 datasets
 evaluate
 numpy
+wandb

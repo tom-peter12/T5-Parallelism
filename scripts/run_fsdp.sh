@@ -26,6 +26,9 @@ MAX_EVAL_SAMPLES="${MAX_EVAL_SAMPLES:-1000}"
 PRECISION_FLAG="${PRECISION_FLAG:---bf16}"
 # GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:---gradient-checkpointing}"
 FSDP_CONFIG="${PROJECT_DIR}/fsdp_config.json"
+WANDB_ENTITY="${WANDB_ENTITY:-t5_mlsys}"
+WANDB_PROJECT="${WANDB_PROJECT:-deepseed}"
+WANDB_RUN_NAME="${WANDB_RUN_NAME:-fsdp-${TASK_NAME}}"
 
 echo "=== T5 FSDP ==="
 print_summary
@@ -53,5 +56,8 @@ torchrun \
     --max-eval-samples "${MAX_EVAL_SAMPLES}" \
     --fsdp \
     --fsdp-config "${FSDP_CONFIG}" \
+    --wandb-entity "${WANDB_ENTITY}" \
+    --wandb-project "${WANDB_PROJECT}" \
+    --wandb-run-name "${WANDB_RUN_NAME}" \
   #  ${GRADIENT_CHECKPOINTING} \
     ${PRECISION_FLAG}
