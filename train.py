@@ -3,6 +3,7 @@ import inspect
 import os
 from typing import Dict
 
+import evaluate
 import numpy as np
 from transformers import (
     AutoTokenizer,
@@ -13,7 +14,7 @@ from transformers import (
     set_seed,
 )
 
-from data import load_glue_text2text, normalize_text
+from data import load_xsum_text2text, normalize_text
 
 
 def build_training_args(args):
@@ -38,7 +39,7 @@ def build_training_args(args):
         "logging_steps": args.logging_steps,
         "save_total_limit": args.save_total_limit,
         "dataloader_num_workers": args.num_workers,
-        "dataloader_pin_memory": True,
+        "dataloader_pin_memory": False,
         "report_to": ["wandb"] if args.wandb_project else [],
         "bf16": args.bf16,
         "fp16": args.fp16,
@@ -77,8 +78,6 @@ def build_trainer(model, training_args, train_dataset, eval_dataset, tokenizer, 
         "compute_metrics": compute_metrics,
     }
 
-    # Older/newer Transformers versions disagree on whether this should be
-    # passed as `tokenizer`, `processing_class`, or omitted entirely.
     if "tokenizer" in valid_keys:
         trainer_kwargs["tokenizer"] = tokenizer
     elif "processing_class" in valid_keys:
@@ -91,15 +90,15 @@ def build_trainer(model, training_args, train_dataset, eval_dataset, tokenizer, 
 def parse_args():
     parser = argparse.ArgumentParser("Library-based T5 Large distributed fine-tuning")
     parser.add_argument("--model-name", type=str, default="t5-large")
-    parser.add_argument("--task-name", type=str, default="sst2", choices=["sst2", "mrpc", "qnli"])
+    parser.add_argument("--task-name", type=str, default="xsum")
     parser.add_argument("--output-dir", type=str, default=os.path.join(os.path.dirname(__file__), "outputs"))
     parser.add_argument("--deepspeed-config", type=str, default="")
     parser.add_argument("--fsdp-config", type=str, default="")
-    parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--per-device-batch-size", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--per-device-batch-size", type=int, default=4)
     parser.add_argument("--eval-batch-size", type=int, default=8)
-    parser.add_argument("--grad-accum", type=int, default=8)
-    parser.add_argument("--learning-rate", type=float, default=2e-5)
+    parser.add_argument("--grad-accum", type=int, default=2)
+    parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--warmup-ratio", type=float, default=0.06)
     parser.add_argument("--optim", type=str, default="adafactor")
@@ -107,19 +106,18 @@ def parse_args():
     parser.add_argument("--save-strategy", type=str, default="epoch")
     parser.add_argument("--eval-strategy", type=str, default="epoch")
     parser.add_argument("--save-total-limit", type=int, default=2)
-    parser.add_argument("--max-source-length", type=int, default=192)
-    parser.add_argument("--max-target-length", type=int, default=8)
-    parser.add_argument("--generation-max-length", type=int, default=8)
+    parser.add_argument("--max-source-length", type=int, default=256)
+    parser.add_argument("--max-target-length", type=int, default=64)
+    parser.add_argument("--generation-max-length", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max-train-samples", type=int, default=0)
-    parser.add_argument("--max-eval-samples", type=int, default=0)
+    parser.add_argument("--max-train-samples", type=int, default=10000)
+    parser.add_argument("--max-eval-samples", type=int, default=1000)
     parser.add_argument("--gradient-checkpointing", action="store_true")
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--fsdp", action="store_true")
     parser.add_argument("--resume-from-checkpoint", type=str, default="")
-    # W&B tracking
     parser.add_argument("--wandb-entity", type=str, default="t5_mlsys")
     parser.add_argument("--wandb-project", type=str, default="deepseed")
     parser.add_argument("--wandb-run-name", type=str, default="")
@@ -127,11 +125,17 @@ def parse_args():
 
 
 def build_compute_metrics(tokenizer):
+    rouge = evaluate.load("rouge")
+
     def compute_metrics(eval_pred) -> Dict[str, float]:
         predictions, labels = eval_pred
 
         if isinstance(predictions, tuple):
             predictions = predictions[0]
+
+        # fix overflow from bf16 token ids
+        predictions = np.clip(predictions, 0, tokenizer.vocab_size - 1)
+        predictions = predictions.astype(np.int32)
 
         labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
         pred_texts = tokenizer.batch_decode(predictions, skip_special_tokens=True)
@@ -139,11 +143,22 @@ def build_compute_metrics(tokenizer):
 
         normalized_preds = [normalize_text(text) for text in pred_texts]
         normalized_labels = [normalize_text(text) for text in label_texts]
-        accuracy = float(
+
+        rouge_scores = rouge.compute(
+            predictions=normalized_preds,
+            references=normalized_labels,
+            use_stemmer=True,
+        )
+        exact_match = float(
             sum(int(pred == label) for pred, label in zip(normalized_preds, normalized_labels))
             / max(1, len(normalized_labels))
         )
-        return {"accuracy": accuracy}
+        return {
+            "rouge1": float(rouge_scores["rouge1"]),
+            "rouge2": float(rouge_scores["rouge2"]),
+            "rougeL": float(rouge_scores["rougeL"]),
+            "exact_match": exact_match,
+        }
 
     return compute_metrics
 
@@ -165,9 +180,8 @@ def main():
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
 
-    train_dataset, eval_dataset = load_glue_text2text(
+    train_dataset, eval_dataset = load_xsum_text2text(
         tokenizer=tokenizer,
-        task_name=args.task_name,
         max_source_length=args.max_source_length,
         max_target_length=args.max_target_length,
         max_train_samples=args.max_train_samples,

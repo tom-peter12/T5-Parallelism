@@ -6,3 +6,4 @@ datasets
 evaluate
 numpy
 wandb
+sentencepiece
