@@ -3,3 +3,8 @@ __pycache__
 outputs
 wandb/
 tea_debug.log
+
+*api_key
+
+megatron_data/
+outputs/megatron_pp/
