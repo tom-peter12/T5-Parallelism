@@ -1,3 +1,5 @@
 __pycache__
 .git
 outputs
+wandb/
+tea_debug.log

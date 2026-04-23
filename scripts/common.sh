@@ -69,6 +69,8 @@ print_summary() {
   echo "epochs      : ${EPOCHS}"
   echo "batch_size  : ${PER_DEVICE_BATCH_SIZE}"
   echo "grad_accum  : ${GRAD_ACCUM}"
+  echo "source_len  : ${MAX_SOURCE_LENGTH}"
+  echo "target_len  : ${MAX_TARGET_LENGTH}"
   echo "train_sub   : ${MAX_TRAIN_SAMPLES}"
   echo "eval_sub    : ${MAX_EVAL_SAMPLES}"
   echo "wandb_entity: ${WANDB_ENTITY:-t5_mlsys}"
