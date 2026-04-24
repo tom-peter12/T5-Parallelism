@@ -12,6 +12,14 @@ A benchmarking suite for comparing **distributed training strategies** on `t5-la
 
 All strategies share a single training entrypoint (`train.py`) and are configured purely through CLI flags and config files — no code changes needed to switch strategies.
 
+In addition to these strategies, **Megatron-DeepSpeed** is also utilized to implement three parallelism strategies:
+
+| Strategy | Script | Backend |
+|---|---|---|
+| Tensor / Model Parallelism | `run_megatron_t5_tensor.sh` | Megatron tensor model parallelism |
+| Pipeline Parallelism | `run_megatron_t5_pipeline.sh` | Megatron pipeline model parallelism |
+| Hybrid Parallelism | `run_megatron_t5_hybrid.sh` | Megatron tensor + pipeline parallelism |
+
 ---
 
 ## Task
@@ -45,6 +53,15 @@ Extends ZeRO-2 by also sharding **model parameters** across GPUs. The most memor
 ### DeepSpeed ZeRO-3 + CPU Offload
 Builds on ZeRO-3 by offloading both **parameters and optimizer states to CPU RAM**. Dramatically reduces GPU memory at the cost of CPU↔GPU data transfers, which can significantly reduce throughput. Best used when GPU memory is the hard constraint. Configured via `ds_configs/zero3_offload.json`.
 
+### Megatron Tensor / Model Parallelism
+Splits individual layer weights across GPUs using **tensor model parallelism**, so each GPU stores only a partition of the large matrix operations inside the model instead of a full replica. In this repository the default Megatron layout uses `tensor-model-parallel-size=2` and `pipeline-model-parallel-size=1`. This reduces per-GPU model memory and enables larger model shards, but introduces communication inside each transformer layer.
+
+### Megatron Pipeline Parallelism
+Splits the model itself into **pipeline stages** placed on different GPUs, with different micro-batches flowing through the stages in sequence. For T5, the default configuration uses `pipeline-model-parallel-size=2` with `pipeline-model-parallel-split-rank=1`, which creates a natural encoder/decoder split. This reduces the amount of model state each GPU must host, but can introduce pipeline bubbles and stage-balance challenges.
+
+### Megatron Hybrid Parallelism
+Combines **tensor parallelism and pipeline parallelism** in the same run. In this repository the default layout uses `tensor-model-parallel-size=2` together with `pipeline-model-parallel-size=2`, so tensor parallelism is applied within each pipeline stage. When total processes exceed `tensor x pipeline` model-parallel size, Megatron also forms additional data-parallel groups automatically. This is the most flexible Megatron setup for scaling up, but it is also the most communication-heavy and operationally complex.
+
 ---
 
 ## Project Layout
@@ -61,11 +78,16 @@ T5-Parallelism/
 │   └── zero3_offload.json    # DeepSpeed ZeRO Stage 3 + CPU offload config
 └── scripts/
     ├── common.sh             # Shared shell utilities (host resolution, env setup)
+    ├── megatron_common.sh    # Shared Megatron shell utilities
+    ├── prepare_xsum_megatron.sh # Export + preprocess XSum for Megatron
     ├── run_trainer.sh        # Launch: DDP baseline
     ├── run_fsdp.sh           # Launch: FSDP
     ├── run_zero2.sh          # Launch: DeepSpeed ZeRO-2
     ├── run_zero3.sh          # Launch: DeepSpeed ZeRO-3
-    └── run_zero3_offload.sh  # Launch: DeepSpeed ZeRO-3 + CPU offload
+    ├── run_zero3_offload.sh  # Launch: DeepSpeed ZeRO-3 + CPU offload
+    ├── run_megatron_t5_tensor.sh   # Launch: Megatron tensor/model parallelism
+    ├── run_megatron_t5_pipeline.sh # Launch: Megatron pipeline parallelism
+    └── run_megatron_t5_hybrid.sh   # Launch: Megatron hybrid parallelism
 ```
 
 ---
@@ -85,6 +107,183 @@ pip uninstall -y torch torchvision
 pip install --index-url https://download.pytorch.org/whl/cu124 torch torchvision
 pip install -r requirements.txt
 ```
+
+For the Megatron-based strategies, follow the dedicated setup guide in [MEGATRON.md](./MEGATRON.md) first.
+
+After that, make sure you also have a sibling checkout of `Megatron-DeepSpeed`:
+
+```bash
+cd ..
+git clone https://github.com/deepspeedai/Megatron-DeepSpeed
+```
+
+The Megatron integration in this repository depends on a small local patch containing the fixes developed during this project. After creating the patch file in this repo, apply it with:
+
+```bash
+cd Megatron-DeepSpeed
+git apply <path-to-T5-parallelism>/patches/0001-fix-make-Megatron-compatible-with-t5-pipeline-parall.patch
+```
+
+---
+
+## Megatron Additions
+
+The three Megatron launchers were added fpr distributed strategies:
+
+- `run_megatron_t5_tensor.sh`: model parallelism via **tensor parallelism**
+- `run_megatron_t5_pipeline.sh`: **pipeline parallelism** with an encoder/decoder split
+- `run_megatron_t5_hybrid.sh`: **hybrid parallelism** combining tensor and pipeline parallelism
+
+These scripts use the external `Megatron-DeepSpeed` checkout instead of `train.py`, and they operate on an **XSum** corpus preprocessed into Megatron indexed dataset format.
+
+### Preparing the Megatron Dataset
+
+All three Megatron strategies share the same preprocessing pipeline:
+
+```bash
+bash scripts/prepare_xsum_megatron.sh
+```
+
+This script:
+
+- exports XSum to JSONL
+- tokenizes it using the configured Megatron tokenizer
+- builds `mmap` `.bin/.idx` dataset files under `megatron_data/`
+
+By default it prepares the **document-level** dataset used by the Megatron launchers.
+
+#### Step-by-Step Dataset Generation
+
+1. Verify the Megatron preprocessing entrypoint exists:
+
+```bash
+test -f ../Megatron-DeepSpeed/tools/preprocess_data.py
+```
+
+2. Generate the Megatron-ready XSum dataset:
+
+```bash
+bash scripts/prepare_xsum_megatron.sh
+```
+
+3. Confirm the indexed dataset files were created:
+
+```bash
+ls -lh megatron_data/xsum_text_document.bin megatron_data/xsum_text_document.idx
+```
+
+The resulting files are the default dataset inputs for:
+
+- `run_megatron_t5_tensor.sh`
+- `run_megatron_t5_pipeline.sh`
+- `run_megatron_t5_hybrid.sh`
+
+If you want to limit preprocessing for quick smoke tests, you can subsample before building the dataset:
+
+```bash
+MAX_TRAIN_SAMPLES=4000 \
+MAX_VALIDATION_SAMPLES=1000 \
+MAX_TEST_SAMPLES=500 \
+bash scripts/prepare_xsum_megatron.sh
+```
+
+If you need to regenerate the Megatron dataset from scratch, remove the old indexed files first:
+
+```bash
+rm -f megatron_data/xsum_text_document.bin megatron_data/xsum_text_document.idx
+bash scripts/prepare_xsum_megatron.sh
+```
+
+### Choosing the Parallel Stages
+
+The default layouts are:
+
+- **Tensor parallelism**: `tensor-model-parallel-size=2`, `pipeline-model-parallel-size=1`
+- **Pipeline parallelism**: `tensor-model-parallel-size=1`, `pipeline-model-parallel-size=2`, `pipeline-model-parallel-split-rank=1`
+- **Hybrid parallelism**: `tensor-model-parallel-size=2`, `pipeline-model-parallel-size=2`, `pipeline-model-parallel-split-rank=1`
+
+For T5, the natural pipeline split is between the **encoder** and **decoder**:
+
+- stage 0 runs the encoder stack
+- stage 1 runs the decoder stack
+
+Hybrid parallelism then applies tensor parallelism **within each of those pipeline stages**.
+
+### Running the Three New Strategies
+
+As with the other scripts, run the same launcher on each node manually. The first positional argument is the master hostname and the second is the node rank.
+
+#### 1. Tensor / Model Parallelism
+
+This is the model-parallel-only strategy.
+
+Default layout:
+
+- `tensor-model-parallel-size=2`
+- `pipeline-model-parallel-size=1`
+
+Example:
+
+```bash
+export HOSTS="ws-lx-xxy ws-lx-xxz"
+bash scripts/run_megatron_t5_tensor.sh ws-lx-xxy 0
+bash scripts/run_megatron_t5_tensor.sh ws-lx-xxy 1
+```
+
+#### 2. Pipeline Parallelism
+
+This is the pipeline-only strategy.
+
+Default layout:
+
+- `tensor-model-parallel-size=1`
+- `pipeline-model-parallel-size=2`
+- `pipeline-model-parallel-split-rank=1`
+
+Example:
+
+```bash
+export HOSTS="ws-lx-xxy ws-lx-xxz"
+bash scripts/run_megatron_t5_pipeline.sh ws-lx-xxy 0
+bash scripts/run_megatron_t5_pipeline.sh ws-lx-xxy 1
+```
+
+#### 3. Hybrid Parallelism
+
+This combines tensor parallelism and pipeline parallelism.
+
+Default layout:
+
+- `tensor-model-parallel-size=2`
+- `pipeline-model-parallel-size=2`
+- `pipeline-model-parallel-split-rank=1`
+
+This requires at least **4 total GPU processes**.
+
+Example on 2 nodes with 2 GPU processes per node:
+
+```bash
+export HOSTS="ws-lx-xxy ws-lx-xxz"
+NPROC_PER_NODE=2 bash scripts/run_megatron_t5_hybrid.sh ws-lx-xxy 0
+NPROC_PER_NODE=2 bash scripts/run_megatron_t5_hybrid.sh ws-lx-xxy 1
+```
+
+Example on 1 node with 4 GPU processes:
+
+```bash
+export HOSTS="ws-lx-xxy"
+NPROC_PER_NODE=4 bash scripts/run_megatron_t5_hybrid.sh ws-lx-xxy 0
+```
+
+### Megatron Outputs
+
+The Megatron launchers write to separate directories:
+
+- `outputs/megatron_tp`
+- `outputs/megatron_pp`
+- `outputs/megatron_hybrid`
+
+Each one stores checkpoints under its own `checkpoints/` subdirectory.
 
 ---
 
