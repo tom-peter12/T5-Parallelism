@@ -53,6 +53,15 @@ Extends ZeRO-2 by also sharding **model parameters** across GPUs. The most memor
 ### DeepSpeed ZeRO-3 + CPU Offload
 Builds on ZeRO-3 by offloading both **parameters and optimizer states to CPU RAM**. Dramatically reduces GPU memory at the cost of CPU↔GPU data transfers, which can significantly reduce throughput. Best used when GPU memory is the hard constraint. Configured via `ds_configs/zero3_offload.json`.
 
+### Megatron Tensor / Model Parallelism
+Splits individual layer weights across GPUs using **tensor model parallelism**, so each GPU stores only a partition of the large matrix operations inside the model instead of a full replica. In this repository the default Megatron layout uses `tensor-model-parallel-size=2` and `pipeline-model-parallel-size=1`. This reduces per-GPU model memory and enables larger model shards, but introduces communication inside each transformer layer.
+
+### Megatron Pipeline Parallelism
+Splits the model itself into **pipeline stages** placed on different GPUs, with different micro-batches flowing through the stages in sequence. For T5, the default configuration uses `pipeline-model-parallel-size=2` with `pipeline-model-parallel-split-rank=1`, which creates a natural encoder/decoder split. This reduces the amount of model state each GPU must host, but can introduce pipeline bubbles and stage-balance challenges.
+
+### Megatron Hybrid Parallelism
+Combines **tensor parallelism and pipeline parallelism** in the same run. In this repository the default layout uses `tensor-model-parallel-size=2` together with `pipeline-model-parallel-size=2`, so tensor parallelism is applied within each pipeline stage. When total processes exceed `tensor x pipeline` model-parallel size, Megatron also forms additional data-parallel groups automatically. This is the most flexible Megatron setup for scaling up, but it is also the most communication-heavy and operationally complex.
+
 ---
 
 ## Project Layout
@@ -99,7 +108,9 @@ pip install --index-url https://download.pytorch.org/whl/cu124 torch torchvision
 pip install -r requirements.txt
 ```
 
-For the Megatron-based strategies, you also need a sibling checkout of `Megatron-DeepSpeed`:
+For the Megatron-based strategies, follow the dedicated setup guide in [MEGATRON.md](./MEGATRON.md) first.
+
+After that, make sure you also have a sibling checkout of `Megatron-DeepSpeed`:
 
 ```bash
 cd ..
@@ -109,7 +120,8 @@ git clone https://github.com/deepspeedai/Megatron-DeepSpeed
 The Megatron integration in this repository depends on a small local patch containing the fixes developed during this project. After creating the patch file in this repo, apply it with:
 
 ```bash
-git -C ../Megatron-DeepSpeed apply patches/0001-fix-make-Megatron-compatible-with-t5-pipeline-parall.patch
+cd Megatron-DeepSpeed
+git apply <path-to-T5-parallelism>/patches/0001-fix-make-Megatron-compatible-with-t5-pipeline-parall.patch
 ```
 
 ---
@@ -142,28 +154,19 @@ By default it prepares the **document-level** dataset used by the Megatron launc
 
 #### Step-by-Step Dataset Generation
 
-From a fresh checkout, the recommended sequence is:
-
-1. Make sure the sibling `Megatron-DeepSpeed` checkout exists.
-2. Apply the local Megatron patch:
-
-```bash
-git -C ../Megatron-DeepSpeed apply patches/PLACEHOLDER_PATCH_NAME.patch
-```
-
-3. Verify the Megatron preprocessing entrypoint exists:
+1. Verify the Megatron preprocessing entrypoint exists:
 
 ```bash
 test -f ../Megatron-DeepSpeed/tools/preprocess_data.py
 ```
 
-4. Generate the Megatron-ready XSum dataset:
+2. Generate the Megatron-ready XSum dataset:
 
 ```bash
 bash scripts/prepare_xsum_megatron.sh
 ```
 
-5. Confirm the indexed dataset files were created:
+3. Confirm the indexed dataset files were created:
 
 ```bash
 ls -lh megatron_data/xsum_text_document.bin megatron_data/xsum_text_document.idx
