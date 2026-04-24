@@ -120,8 +120,7 @@ git clone https://github.com/deepspeedai/Megatron-DeepSpeed
 The Megatron integration in this repository depends on a small local patch containing the fixes developed during this project. After creating the patch file in this repo, apply it with:
 
 ```bash
-cd Megatron-DeepSpeed
-git apply <path-to-T5-parallelism>/patches/0001-fix-make-Megatron-compatible-with-t5-pipeline-parall.patch
+git -C ../Megatron-DeepSpeed apply ../T5-Parallelism/patches/0001-fix-make-Megatron-compatible-with-t5-pipeline-parall.patch
 ```
 
 ---
@@ -154,19 +153,28 @@ By default it prepares the **document-level** dataset used by the Megatron launc
 
 #### Step-by-Step Dataset Generation
 
-1. Verify the Megatron preprocessing entrypoint exists:
+From a fresh checkout, the recommended sequence is:
+
+1. Make sure the sibling `Megatron-DeepSpeed` checkout exists.
+2. Apply the local Megatron patch:
+
+```bash
+git -C ../Megatron-DeepSpeed apply ../T5-Parallelism/patches/0001-fix-make-Megatron-compatible-with-t5-pipeline-parall.patch
+```
+
+3. Verify the Megatron preprocessing entrypoint exists:
 
 ```bash
 test -f ../Megatron-DeepSpeed/tools/preprocess_data.py
 ```
 
-2. Generate the Megatron-ready XSum dataset:
+4. Generate the Megatron-ready XSum dataset:
 
 ```bash
 bash scripts/prepare_xsum_megatron.sh
 ```
 
-3. Confirm the indexed dataset files were created:
+5. Confirm the indexed dataset files were created:
 
 ```bash
 ls -lh megatron_data/xsum_text_document.bin megatron_data/xsum_text_document.idx
@@ -367,7 +375,7 @@ bash scripts/run_zero3_offload.sh ws-lx-xxy <node_rank>   # ZeRO-3 + CPU offload
 
 ## W&B Tracking
 
-All launch scripts have W&B tracking **enabled by default**. Runs are automatically logged to the `t5_mlsys` entity under the `deepseed` project, with a run name derived from the strategy and task (e.g., `ddp-sst2`, `fsdp-sst2`, `zero3-offload-mrpc`).
+All launch scripts have W&B tracking **enabled by default**. Runs are automatically logged to the `t5_mlsys` entity under the `deepseed` project, with a run name derived from the strategy and dataset (e.g., `ddp-xsum`, `zero3-offload-xsum`, `megatron-pipeline-xsum`).
 
 ### Setup
 
@@ -382,7 +390,8 @@ wandb login   # paste your API key from https://wandb.ai/authorize
 |---|---|---|
 | `WANDB_ENTITY` | `t5_mlsys` | W&B team / entity |
 | `WANDB_PROJECT` | `deepseed` | W&B project name |
-| `WANDB_RUN_NAME` | `<strategy>-<task>` | Auto-named per script (e.g. `zero3-sst2`) |
+| `WANDB_RUN_NAME` | `<strategy>-xsum` | Auto-named per script |
+| `WANDB_SAVE_DIR` | `${OUTPUT_DIR}/wandb` | Local W&B directory for Megatron runs |
 
 ### Overriding
 
@@ -401,7 +410,7 @@ bash scripts/run_trainer.sh ws-lx-xxy 0
 
 ### What Gets Logged
 
-The HuggingFace Trainer reports the following to W&B automatically:
+The HuggingFace Trainer scripts (`run_trainer.sh`, `run_fsdp.sh`, `run_zero*.sh`) report the following to W&B automatically:
 
 | Metric | Description |
 |---|---|
@@ -410,8 +419,11 @@ The HuggingFace Trainer reports the following to W&B automatically:
 | `train/samples_per_second` | Throughput |
 | `train/steps_per_second` | Step rate |
 | `eval/loss` | Eval loss per epoch |
-| `eval/accuracy` | Exact-match accuracy |
+| `eval/rouge1`, `eval/rouge2`, `eval/rougeL` | ROUGE scores |
+| `eval/exact_match` | Normalized exact-match score |
 | `eval/runtime` | Eval wall-clock time |
+
+The Megatron scripts (`run_megatron_t5_*.sh`) use Megatron-DeepSpeed's native W&B writer. They log loss, learning rate, throughput, validation perplexity when enabled by Megatron, and the full Megatron argument config.
 
 ---
 

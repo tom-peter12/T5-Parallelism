@@ -8,3 +8,6 @@ tea_debug.log
 
 megatron_data/
 outputs/megatron_pp/
+
+megatron_data_text_document.bin
+megatron_data_text_document.idx
