@@ -6,6 +6,6 @@
   "forward_prefetch": false,
   "limit_all_gathers": true,
   "use_orig_params": true,
-  "sync_module_states": true,
+  "sync_module_states": false,
   "activation_checkpointing": true
 }
