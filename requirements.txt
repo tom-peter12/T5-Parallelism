@@ -1,9 +1,6 @@
-torch
-transformers
-accelerate
 deepspeed
-datasets
-evaluate
-numpy
-wandb
+six
+transformers
 sentencepiece
+datasets
+wandb

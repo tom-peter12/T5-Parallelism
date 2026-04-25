@@ -1,0 +1,88 @@
+diff --git a/megatron/model/language_model.py b/megatron/model/language_model.py
+index 0769fdf..954eb83 100644
+--- a/megatron/model/language_model.py
++++ b/megatron/model/language_model.py
+@@ -562,6 +562,7 @@ class TransformerLanguageModel(MegatronModule):
+                     rotary_pos_emb=rotary_pos_emb)
+             else:
+                 encoder_output = self.encoder_hidden_state
++                encoder_moe_losses = []
+         else:
+             encoder_output, encoder_moe_losses = enc_hidden_states.to(encoder_input.dtype), []
+ 
+diff --git a/megatron/model/t5_model.py b/megatron/model/t5_model.py
+index 5a4c2c3..f69dc83 100644
+--- a/megatron/model/t5_model.py
++++ b/megatron/model/t5_model.py
+@@ -148,10 +148,19 @@ class T5Model(MegatronModule):
+                                                                                 lm_labels)
+                 # [s b] => [b s]
+                 lm_loss = lm_loss.transpose(0,1).contiguous()
+-            return lm_loss, dec_moe_losses, enc_moe_losses if self.return_moe_loss else lm_loss
++            if self.return_moe_loss:
++                return lm_loss, dec_moe_losses, enc_moe_losses
++            return lm_loss
+         elif self.add_decoder and not self.add_encoder:
+-            decoder_output, _, decoder_moe_losses, _= lm_output
+-            return decoder_output, decoder_moe_losses
++            decoder_output, _, decoder_moe_losses, _ = lm_output
++            if self.return_moe_loss:
++                return decoder_output, decoder_moe_losses
++            return decoder_output
++        elif self.add_encoder and not self.add_decoder:
++            encoder_output, encoder_moe_losses = lm_output
++            if self.return_moe_loss:
++                return encoder_output, encoder_moe_losses
++            return encoder_output
+         return lm_output
+ 
+     def state_dict_for_save_checkpoint(self, prefix='', keep_vars=False):
+diff --git a/megatron/tokenizer/tokenizer.py b/megatron/tokenizer/tokenizer.py
+index 7edef90..15dec42 100644
+--- a/megatron/tokenizer/tokenizer.py
++++ b/megatron/tokenizer/tokenizer.py
+@@ -573,7 +573,7 @@ class _HFTokenizer(AbstractTokenizer):
+ 
+     @property
+     def vocab_size(self):
+-        return self.tokenizer.vocab_size
++        return len(self.tokenizer)
+ 
+     @property
+     def vocab(self):
+@@ -601,12 +601,12 @@ class _HFTokenizer(AbstractTokenizer):
+     @property
+     def cls(self):
+         candidate = self.tokenizer.cls_token_id
+-        return self._check_token_candidate(candidate)
++        return self._check_token_candidate(candidate, fallback=self.pad)
+ 
+     @property
+     def sep(self):
+         candidate = self.tokenizer.sep_token_id
+-        return self._check_token_candidate(candidate)
++        return self._check_token_candidate(candidate, fallback=self.eos_token_id)
+ 
+     @property
+     def pad(self):
+@@ -630,15 +630,17 @@ class _HFTokenizer(AbstractTokenizer):
+     @property
+     def mask(self):
+         candidate = self.tokenizer.mask_token_id
+-        return self._check_token_candidate(candidate)
++        return self._check_token_candidate(candidate, fallback=self.pad)
+ 
+     @property
+     def additional_special_tokens_ids(self):
+         return self.tokenizer.additional_special_tokens_ids
+ 
+     @staticmethod
+-    def _check_token_candidate(candidate):
+-        """Checks whether the candidate is None or not, and raises an exception if it is."""
++    def _check_token_candidate(candidate, fallback=None):
++        """Return the candidate token id or a fallback when the tokenizer lacks that token."""
+         if candidate is None:
++            if fallback is not None:
++                return fallback
+             raise AttributeError("Requested token doesn't exist in current tokenizer")
+         return candidate
