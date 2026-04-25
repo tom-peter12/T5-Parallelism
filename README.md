@@ -1,473 +1,523 @@
 # T5-Large Distributed Training Benchmark
 
-A benchmarking suite for comparing **distributed training strategies** on `t5-large` across multiple GPUs and nodes. The goal is to measure and compare **training throughput**, **GPU memory usage**, and **convergence** for five parallelism strategies:
+Benchmarking suite comparing distributed training strategies on **T5-Large** using **Megatron-DeepSpeed**. All strategies run the same pre-training objective (T5 span-corruption masked language modelling) on the **XSum corpus**, with identical model architecture and hyperparameters, so throughput numbers are directly comparable.
 
-| Strategy | Script | Backend |
-|---|---|---|
-| DDP Baseline | `run_trainer.sh` | PyTorch `DistributedDataParallel` |
-| FSDP | `run_fsdp.sh` | PyTorch `FullyShardedDataParallel` |
-| ZeRO-2 | `run_zero2.sh` | DeepSpeed ZeRO Stage 2 |
-| ZeRO-3 | `run_zero3.sh` | DeepSpeed ZeRO Stage 3 |
-| ZeRO-3 + CPU Offload | `run_zero3_offload.sh` | DeepSpeed ZeRO Stage 3 + CPU offload |
+## Strategies
 
-All strategies share a single training entrypoint (`train.py`) and are configured purely through CLI flags and config files — no code changes needed to switch strategies.
+| Strategy | Script | Default port | Parallelism |
+|---|---|---|---|
+| DDP (baseline) | `run_megatron_t5_ddp.sh` | 29800 | Megatron native DDP, no model sharding |
+| ZeRO-1 | `run_megatron_t5_zero1.sh` | 29801 | Optimizer state sharding |
+| ZeRO-2 | `run_megatron_t5_zero2.sh` | 29802 | + Gradient sharding |
+| ZeRO-3 | `run_megatron_t5_zero3.sh` | 29803 | + Parameter sharding |
+| ZeRO-3 + CPU Offload | `run_megatron_t5_zero3_offload.sh` | 29804 | + Optimizer & param offload to CPU |
+| Tensor Parallelism | `run_megatron_t5_tensor.sh` | 29811 | Column/row-parallel across 2 GPUs (TP=2) |
+| Pipeline Parallelism | `run_megatron_t5_pipeline.sh` | 29810 | Encoder on GPU 0, decoder on GPU 1 (PP=2) |
+| Hybrid (TP+PP) | `run_megatron_t5_hybrid.sh` | 29812 | TP=2 × PP=2, requires 4 GPUs total |
 
-In addition to these strategies, **Megatron-DeepSpeed** is also utilized to implement three parallelism strategies:
+**Fixed across all runs:** T5-Large architecture (24+24 layers, hidden=1024, heads=16, FFN=2816), XSum dataset, `global_batch_size=16`, `micro_batch_size=1`, `train_iters=1000`, bf16, AdamW (`lr=1e-4`, cosine decay).
 
-| Strategy | Script | Backend |
-|---|---|---|
-| Tensor / Model Parallelism | `run_megatron_t5_tensor.sh` | Megatron tensor model parallelism |
-| Pipeline Parallelism | `run_megatron_t5_pipeline.sh` | Megatron pipeline model parallelism |
-| Hybrid Parallelism | `run_megatron_t5_hybrid.sh` | Megatron tensor + pipeline parallelism |
-
----
-
-## Task
-
-Training is performed on [GLUE](https://gluebenchmark.com/) ([HuggingFace dataset](https://huggingface.co/datasets/nyu-mll/glue)) classification benchmarks, reformulated as **text-to-text** tasks in the T5 style. Integer labels are converted to text strings and the model is trained to generate the correct label token.
-
-| GLUE Task | Input Prompt Format | Labels |
-|---|---|---|
-| SST-2 (sentiment) | `sst2 sentence: <text> sentiment:` | `positive` / `negative` |
-| MRPC (paraphrase) | `mrpc sentence1: <s1> sentence2: <s2> equivalent:` | `equivalent` / `not_equivalent` |
-| QNLI (inference) | `qnli question: <q> sentence: <s> answer:` | `entailment` / `not_entailment` |
-
-The default and recommended task is **SST-2** (`--task-name sst2`), which is fast to run and gives a clean benchmark signal.
+**Hardware target:** 2 nodes, 1 GPU each (L4 GPUs on a SLURM cluster). Tensor/pipeline parallelism use both nodes as a single model-parallel group.
 
 ---
 
-## Parallelism Strategies
-
-### DDP — Distributed Data Parallel (Baseline)
-Each GPU holds a **full copy** of the model. Gradients are averaged across GPUs via all-reduce after each backward pass. Simple and well-understood, but the most memory-hungry strategy since every GPU pays the full cost of optimizer states, gradients, and parameters.
-
-### FSDP — Fully Sharded Data Parallel
-Each GPU holds only a **shard of the model parameters, gradients, and optimizer states**. Parameters are gathered just-in-time for each forward/backward pass and discarded afterward. Configured via `fsdp_config.json` to wrap at the `T5Block` layer granularity. More memory-efficient than DDP at the cost of higher inter-GPU communication.
-
-### DeepSpeed ZeRO-2
-Shards **optimizer states and gradients** across GPUs, but each GPU still holds a full copy of the model parameters. A middle ground: significant memory savings over DDP with lower communication overhead than ZeRO-3. Configured via `ds_configs/zero2.json`.
-
-### DeepSpeed ZeRO-3
-Extends ZeRO-2 by also sharding **model parameters** across GPUs. The most memory-efficient GPU-only strategy. Requires more inter-GPU communication (all-gather for parameters) but enables training models that would not fit on a single GPU at all. Configured via `ds_configs/zero3.json`.
-
-### DeepSpeed ZeRO-3 + CPU Offload
-Builds on ZeRO-3 by offloading both **parameters and optimizer states to CPU RAM**. Dramatically reduces GPU memory at the cost of CPU↔GPU data transfers, which can significantly reduce throughput. Best used when GPU memory is the hard constraint. Configured via `ds_configs/zero3_offload.json`.
-
-### Megatron Tensor / Model Parallelism
-Splits individual layer weights across GPUs using **tensor model parallelism**, so each GPU stores only a partition of the large matrix operations inside the model instead of a full replica. In this repository the default Megatron layout uses `tensor-model-parallel-size=2` and `pipeline-model-parallel-size=1`. This reduces per-GPU model memory and enables larger model shards, but introduces communication inside each transformer layer.
-
-### Megatron Pipeline Parallelism
-Splits the model itself into **pipeline stages** placed on different GPUs, with different micro-batches flowing through the stages in sequence. For T5, the default configuration uses `pipeline-model-parallel-size=2` with `pipeline-model-parallel-split-rank=1`, which creates a natural encoder/decoder split. This reduces the amount of model state each GPU must host, but can introduce pipeline bubbles and stage-balance challenges.
-
-### Megatron Hybrid Parallelism
-Combines **tensor parallelism and pipeline parallelism** in the same run. In this repository the default layout uses `tensor-model-parallel-size=2` together with `pipeline-model-parallel-size=2`, so tensor parallelism is applied within each pipeline stage. When total processes exceed `tensor x pipeline` model-parallel size, Megatron also forms additional data-parallel groups automatically. This is the most flexible Megatron setup for scaling up, but it is also the most communication-heavy and operationally complex.
-
----
-
-## Project Layout
+## Repository Layout
 
 ```
 T5-Parallelism/
-├── train.py                  # Shared training entrypoint (all strategies)
-├── data.py                   # GLUE dataset loading and text-to-text preprocessing
-├── fsdp_config.json          # FSDP T5Block wrapping configuration
-├── requirements.txt          # Python dependencies
+├── requirements.txt                    # Python deps (deepspeed, transformers, wandb, …)
+├── MEGATRON.md                         # Detailed Apex / DeepSpeed build guide
+├── patches/
+│   ├── megatron_t5_fixes.patch         # Bug fixes applied to Megatron-DeepSpeed
+│   └── 0001-fix-make-Megatron-compatible-with-t5-pipeline-parall.patch
 ├── ds_configs/
-│   ├── zero2.json            # DeepSpeed ZeRO Stage 2 config
-│   ├── zero3.json            # DeepSpeed ZeRO Stage 3 config
-│   └── zero3_offload.json    # DeepSpeed ZeRO Stage 3 + CPU offload config
+│   ├── megatron_zero1.json
+│   ├── megatron_zero2.json
+│   ├── megatron_zero3.json
+│   └── megatron_zero3_offload.json
 └── scripts/
-    ├── common.sh             # Shared shell utilities (host resolution, env setup)
-    ├── megatron_common.sh    # Shared Megatron shell utilities
-    ├── prepare_xsum_megatron.sh # Export + preprocess XSum for Megatron
-    ├── run_trainer.sh        # Launch: DDP baseline
-    ├── run_fsdp.sh           # Launch: FSDP
-    ├── run_zero2.sh          # Launch: DeepSpeed ZeRO-2
-    ├── run_zero3.sh          # Launch: DeepSpeed ZeRO-3
-    ├── run_zero3_offload.sh  # Launch: DeepSpeed ZeRO-3 + CPU offload
-    ├── run_megatron_t5_tensor.sh   # Launch: Megatron tensor/model parallelism
-    ├── run_megatron_t5_pipeline.sh # Launch: Megatron pipeline parallelism
-    └── run_megatron_t5_hybrid.sh   # Launch: Megatron hybrid parallelism
+    ├── common.sh                        # Shared shell utilities (host resolution, etc.)
+    ├── megatron_common.sh               # Megatron-specific utilities + W&B env vars
+    ├── export_xsum_corpus.py            # Downloads XSum → JSONL
+    ├── prepare_xsum_megatron.sh         # Builds Megatron indexed dataset from JSONL
+    ├── run_megatron_t5_ddp.sh
+    ├── run_megatron_t5_zero1.sh
+    ├── run_megatron_t5_zero2.sh
+    ├── run_megatron_t5_zero3.sh
+    ├── run_megatron_t5_zero3_offload.sh
+    ├── run_megatron_t5_tensor.sh
+    ├── run_megatron_t5_pipeline.sh
+    └── run_megatron_t5_hybrid.sh
 ```
 
 ---
 
-## Installation
+## Prerequisites
 
-Install a CUDA-compatible PyTorch build first, then install the remaining dependencies:
+- Linux with CUDA 12.4
+- Two nodes each with at least 1 NVIDIA GPU (L4 / A100 / etc.)
+- Conda
+- Nodes must be able to reach each other over TCP (NCCL communication)
+- A shared filesystem between nodes **or** willingness to copy data manually
+
+---
+
+## Step 1 — Get Your Nodes
 
 ```bash
-pip install -r requirements.txt
+salloc --nodes=2 --gres=gpu:1 --time=04:00:00 --partition=<your-partition>
 ```
 
-If your cluster image requires a specific wheel:
+SLURM prints the two hostnames. Export them — you will use them for every launch:
 
 ```bash
-pip uninstall -y torch torchvision
-pip install --index-url https://download.pytorch.org/whl/cu124 torch torchvision
-pip install -r requirements.txt
+export NODE0=ws-l4-007   # master node (replace with your actual hostnames)
+export NODE1=ws-l4-008
+export HOSTS="${NODE0} ${NODE1}"
 ```
 
-For the Megatron-based strategies, follow the dedicated setup guide in [MEGATRON.md](./MEGATRON.md) first.
+> All commands below are run **on both nodes** unless stated otherwise. SSH into each in a separate terminal.
 
-After that, make sure you also have a sibling checkout of `Megatron-DeepSpeed`:
+---
+
+## Step 2 — Clone This Repository
+
+On **both nodes**:
 
 ```bash
+git clone <this-repo-url> T5-Parallelism
+cd T5-Parallelism
+```
+
+---
+
+## Step 3 — Create and Activate the Conda Environment
+
+On **both nodes**:
+
+```bash
+conda create -n megatron python=3.10 -y
+conda activate megatron
+```
+
+---
+
+## Step 4 — Install PyTorch
+
+On **both nodes**:
+
+```bash
+pip install torch==2.4.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+```
+
+Verify CUDA is visible:
+
+```bash
+python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
+# Expected: True  12.4
+```
+
+---
+
+## Step 5 — Install the CUDA Toolchain
+
+On **both nodes**:
+
+```bash
+conda install cuda-toolkit cudnn -c nvidia/label/cuda-12.4.0 -y
+conda install -c nvidia cuda-nvcc -y
+conda install pytorch-cuda=12.4 -c pytorch -c nvidia -y
+conda install -c conda-forge pybind11 -y
+```
+
+---
+
+## Step 6 — Build and Install Apex
+
+On **both nodes**:
+
+```bash
+git clone https://github.com/NVIDIA/apex.git
+cd apex
+APEX_CPP_EXT=1 APEX_CUDA_EXT=1 pip install -v --no-build-isolation .
 cd ..
-git clone https://github.com/deepspeedai/Megatron-DeepSpeed
 ```
 
-The Megatron integration in this repository depends on a small local patch containing the fixes developed during this project. After creating the patch file in this repo, apply it with:
+> **If Apex fails with a CUDA version mismatch:** set `export CUDA_HOME=/usr/local/cuda-12.4` and retry. If it still fails, open `apex/setup.py`, find `check_cuda_torch_binary_vs_bare_metal`, and comment out the `raise RuntimeError(...)` line — then retry. See [MEGATRON.md](MEGATRON.md) for the exact lines.
+
+---
+
+## Step 7 — Clone Megatron-DeepSpeed
+
+Clone it **next to** (not inside) this repository, on **both nodes**:
 
 ```bash
+cd ..   # go up one level from T5-Parallelism
+git clone https://github.com/deepspeedai/Megatron-DeepSpeed.git
 cd Megatron-DeepSpeed
-git apply <path-to-T5-parallelism>/patches/0001-fix-make-Megatron-compatible-with-t5-pipeline-parall.patch
+```
+
+Your directory tree should look like:
+
+```
+parent-dir/
+├── T5-Parallelism/    ← this repo
+└── Megatron-DeepSpeed/
 ```
 
 ---
 
-## Megatron Additions
+## Step 8 — Apply the Bug-Fix Patch
 
-The three Megatron launchers were added fpr distributed strategies:
+On **both nodes**, from inside `Megatron-DeepSpeed/`:
 
-- `run_megatron_t5_tensor.sh`: model parallelism via **tensor parallelism**
-- `run_megatron_t5_pipeline.sh`: **pipeline parallelism** with an encoder/decoder split
-- `run_megatron_t5_hybrid.sh`: **hybrid parallelism** combining tensor and pipeline parallelism
+```bash
+git apply ../T5-Parallelism/patches/megatron_t5_fixes.patch
+```
 
-These scripts use the external `Megatron-DeepSpeed` checkout instead of `train.py`, and they operate on an **XSum** corpus preprocessed into Megatron indexed dataset format.
+This patch fixes three bugs in the upstream Megatron-DeepSpeed that prevent T5 from training:
 
-### Preparing the Megatron Dataset
+| File | Fix |
+|---|---|
+| `megatron/tokenizer/tokenizer.py` | `_HFTokenizer.vocab_size` now returns `len(tokenizer)` instead of `tokenizer.vocab_size`, so the 100 T5 sentinel tokens (`<extra_id_0>`–`<extra_id_99>`) are included in the embedding table |
+| `megatron/model/t5_model.py` | Fixes an operator-precedence bug in the `return_moe_loss` conditional and adds the missing `encoder-only` forward branch |
+| `megatron/model/language_model.py` | Initialises `encoder_moe_losses = []` in the hidden-state branch to prevent `UnboundLocalError` |
 
-All three Megatron strategies share the same preprocessing pipeline:
+Then install Megatron as an editable package and add it to `PYTHONPATH`:
+
+```bash
+pip install -e .
+export PYTHONPATH=$(pwd)   # add this to ~/.bashrc to persist across sessions
+cd ../T5-Parallelism
+```
+
+> Re-export `PYTHONPATH` in every new terminal on every node, or add `export PYTHONPATH=/path/to/Megatron-DeepSpeed` to `~/.bashrc`.
+
+---
+
+## Step 9 — Install Python Dependencies
+
+On **both nodes**, from inside `T5-Parallelism/`:
+
+```bash
+pip install deepspeed==0.17.6
+pip install -r requirements.txt
+```
+
+Install FlashAttention last (it compiles CUDA extensions):
+
+```bash
+pip install flash-attn --no-build-isolation
+```
+
+> FlashAttention is optional. If it fails to build, the scripts fall back to standard attention automatically.
+
+Verify DeepSpeed can see your GPU:
+
+```bash
+ds_report
+```
+
+Look for `[CUDA]` and `[NCCL]` showing as available.
+
+---
+
+## Step 10 — Set Your W&B API Key
+
+Training metrics are logged to [Weights & Biases](https://wandb.ai) under the project `ml710-t5-parallelism`.
+
+On **both nodes**:
+
+```bash
+export WANDB_API_KEY=<your-key>   # get it from https://wandb.ai/authorize
+```
+
+To make it permanent:
+
+```bash
+echo 'export WANDB_API_KEY=<your-key>' >> ~/.bashrc
+```
+
+To use a different project name:
+
+```bash
+export WANDB_PROJECT=my-project-name
+```
+
+Each script sets a distinct run name by default (`megatron-ddp`, `megatron-zero1`, etc.) so all runs appear in the same project and are easy to compare in the W&B dashboard.
+
+---
+
+## Step 11 — Prepare the Dataset
+
+Run this **once**, on **one node only**. The output files are read by all training scripts.
 
 ```bash
 bash scripts/prepare_xsum_megatron.sh
 ```
 
 This script:
+1. Downloads XSum from HuggingFace via `export_xsum_corpus.py` → `megatron_data/xsum_text.jsonl`
+2. Tokenises with `google-t5/t5-large` and builds Megatron indexed binary files
 
-- exports XSum to JSONL
-- tokenizes it using the configured Megatron tokenizer
-- builds `mmap` `.bin/.idx` dataset files under `megatron_data/`
-
-By default it prepares the **document-level** dataset used by the Megatron launchers.
-
-#### Step-by-Step Dataset Generation
-
-1. Verify the Megatron preprocessing entrypoint exists:
-
-```bash
-test -f ../Megatron-DeepSpeed/tools/preprocess_data.py
-```
-
-2. Generate the Megatron-ready XSum dataset:
-
-```bash
-bash scripts/prepare_xsum_megatron.sh
-```
-
-3. Confirm the indexed dataset files were created:
+Confirm the files exist and are non-empty:
 
 ```bash
 ls -lh megatron_data/xsum_text_document.bin megatron_data/xsum_text_document.idx
 ```
 
-The resulting files are the default dataset inputs for:
-
-- `run_megatron_t5_tensor.sh`
-- `run_megatron_t5_pipeline.sh`
-- `run_megatron_t5_hybrid.sh`
-
-If you want to limit preprocessing for quick smoke tests, you can subsample before building the dataset:
-
-```bash
-MAX_TRAIN_SAMPLES=4000 \
-MAX_VALIDATION_SAMPLES=1000 \
-MAX_TEST_SAMPLES=500 \
-bash scripts/prepare_xsum_megatron.sh
-```
-
-If you need to regenerate the Megatron dataset from scratch, remove the old indexed files first:
-
-```bash
-rm -f megatron_data/xsum_text_document.bin megatron_data/xsum_text_document.idx
-bash scripts/prepare_xsum_megatron.sh
-```
-
-### Choosing the Parallel Stages
-
-The default layouts are:
-
-- **Tensor parallelism**: `tensor-model-parallel-size=2`, `pipeline-model-parallel-size=1`
-- **Pipeline parallelism**: `tensor-model-parallel-size=1`, `pipeline-model-parallel-size=2`, `pipeline-model-parallel-split-rank=1`
-- **Hybrid parallelism**: `tensor-model-parallel-size=2`, `pipeline-model-parallel-size=2`, `pipeline-model-parallel-split-rank=1`
-
-For T5, the natural pipeline split is between the **encoder** and **decoder**:
-
-- stage 0 runs the encoder stack
-- stage 1 runs the decoder stack
-
-Hybrid parallelism then applies tensor parallelism **within each of those pipeline stages**.
-
-### Running the Three New Strategies
-
-As with the other scripts, run the same launcher on each node manually. The first positional argument is the master hostname and the second is the node rank.
-
-#### 1. Tensor / Model Parallelism
-
-This is the model-parallel-only strategy.
-
-Default layout:
-
-- `tensor-model-parallel-size=2`
-- `pipeline-model-parallel-size=1`
-
-Example:
-
-```bash
-export HOSTS="ws-lx-xxy ws-lx-xxz"
-bash scripts/run_megatron_t5_tensor.sh ws-lx-xxy 0
-bash scripts/run_megatron_t5_tensor.sh ws-lx-xxy 1
-```
-
-#### 2. Pipeline Parallelism
-
-This is the pipeline-only strategy.
-
-Default layout:
-
-- `tensor-model-parallel-size=1`
-- `pipeline-model-parallel-size=2`
-- `pipeline-model-parallel-split-rank=1`
-
-Example:
-
-```bash
-export HOSTS="ws-lx-xxy ws-lx-xxz"
-bash scripts/run_megatron_t5_pipeline.sh ws-lx-xxy 0
-bash scripts/run_megatron_t5_pipeline.sh ws-lx-xxy 1
-```
-
-#### 3. Hybrid Parallelism
-
-This combines tensor parallelism and pipeline parallelism.
-
-Default layout:
-
-- `tensor-model-parallel-size=2`
-- `pipeline-model-parallel-size=2`
-- `pipeline-model-parallel-split-rank=1`
-
-This requires at least **4 total GPU processes**.
-
-Example on 2 nodes with 2 GPU processes per node:
-
-```bash
-export HOSTS="ws-lx-xxy ws-lx-xxz"
-NPROC_PER_NODE=2 bash scripts/run_megatron_t5_hybrid.sh ws-lx-xxy 0
-NPROC_PER_NODE=2 bash scripts/run_megatron_t5_hybrid.sh ws-lx-xxy 1
-```
-
-Example on 1 node with 4 GPU processes:
-
-```bash
-export HOSTS="ws-lx-xxy"
-NPROC_PER_NODE=4 bash scripts/run_megatron_t5_hybrid.sh ws-lx-xxy 0
-```
-
-### Megatron Outputs
-
-The Megatron launchers write to separate directories:
-
-- `outputs/megatron_tp`
-- `outputs/megatron_pp`
-- `outputs/megatron_hybrid`
-
-Each one stores checkpoints under its own `checkpoints/` subdirectory.
+> **Shared filesystem (NFS/Lustre):** if `megatron_data/` is on a shared mount, both nodes see it automatically.
+>
+> **No shared filesystem:** copy the two files to the same path on the other node:
+> ```bash
+> scp megatron_data/xsum_text_document.{bin,idx} ${NODE1}:$(pwd)/megatron_data/
+> ```
 
 ---
 
-## Configuration
+## Running Experiments
 
-All scripts are controlled through **environment variables** so you can override any setting without editing the scripts. The full list of supported overrides:
+Every script takes the same two positional arguments:
+
+```bash
+bash scripts/<script>.sh <master-node-hostname> <node-rank>
+```
+
+Open **two terminals** (one SSH session per node) and run both commands at roughly the same time — the processes rendezvous via torchrun before training starts.
+
+You must export the following in every terminal before launching:
+
+```bash
+export HOSTS="${NODE0} ${NODE1}"
+export PYTHONPATH=/path/to/Megatron-DeepSpeed
+export WANDB_API_KEY=<your-key>
+conda activate megatron
+```
+
+---
+
+### DDP (Baseline)
+
+Megatron native data-parallel training. One full model replica per GPU, gradients all-reduced every step.
+
+**Node 0:**
+```bash
+bash scripts/run_megatron_t5_ddp.sh ${NODE0} 0
+```
+**Node 1:**
+```bash
+bash scripts/run_megatron_t5_ddp.sh ${NODE0} 1
+```
+
+---
+
+### ZeRO-1
+
+Optimizer states sharded across GPUs. Each GPU holds a full copy of parameters and gradients but only 1/N of the Adam moments.
+
+**Node 0:**
+```bash
+bash scripts/run_megatron_t5_zero1.sh ${NODE0} 0
+```
+**Node 1:**
+```bash
+bash scripts/run_megatron_t5_zero1.sh ${NODE0} 1
+```
+
+---
+
+### ZeRO-2
+
+Optimizer states + gradients sharded. Reduces gradient memory by 1/N versus ZeRO-1.
+
+**Node 0:**
+```bash
+bash scripts/run_megatron_t5_zero2.sh ${NODE0} 0
+```
+**Node 1:**
+```bash
+bash scripts/run_megatron_t5_zero2.sh ${NODE0} 1
+```
+
+---
+
+### ZeRO-3
+
+Optimizer states + gradients + parameters all sharded. Maximum memory savings; requires an all-gather before each forward pass to reconstruct parameters.
+
+**Node 0:**
+```bash
+bash scripts/run_megatron_t5_zero3.sh ${NODE0} 0
+```
+**Node 1:**
+```bash
+bash scripts/run_megatron_t5_zero3.sh ${NODE0} 1
+```
+
+---
+
+### ZeRO-3 + CPU Offload
+
+Same as ZeRO-3 but optimizer states and parameters are additionally offloaded to CPU RAM. Enables fitting very large models on small GPUs at the cost of PCIe bandwidth.
+
+**Node 0:**
+```bash
+bash scripts/run_megatron_t5_zero3_offload.sh ${NODE0} 0
+```
+**Node 1:**
+```bash
+bash scripts/run_megatron_t5_zero3_offload.sh ${NODE0} 1
+```
+
+---
+
+### Tensor Parallelism (TP=2)
+
+Each GPU holds **half** the model — attention heads and FFN columns/rows are split across both GPUs. Both nodes jointly execute every layer in parallel with an all-reduce per layer.
+
+**Node 0:**
+```bash
+bash scripts/run_megatron_t5_tensor.sh ${NODE0} 0
+```
+**Node 1:**
+```bash
+bash scripts/run_megatron_t5_tensor.sh ${NODE0} 1
+```
+
+---
+
+### Pipeline Parallelism (PP=2)
+
+GPU 0 runs the full encoder stack; GPU 1 runs the full decoder stack. Activations are streamed between nodes between micro-batches.
+
+**Node 0:**
+```bash
+bash scripts/run_megatron_t5_pipeline.sh ${NODE0} 0
+```
+**Node 1:**
+```bash
+bash scripts/run_megatron_t5_pipeline.sh ${NODE0} 1
+```
+
+---
+
+### Hybrid Parallelism (TP=2 × PP=2) — requires 4 GPUs
+
+Combines tensor and pipeline parallelism. Requires **4 GPUs total** (2 per node) or **4 nodes** (1 GPU each). Not runnable in the default 2-node/1-GPU-each setup without adjusting `NPROC_PER_NODE` and `NNODES`.
+
+```bash
+# 4 nodes, 1 GPU each:
+NNODES=4 bash scripts/run_megatron_t5_hybrid.sh ${NODE0} 0   # node 0
+NNODES=4 bash scripts/run_megatron_t5_hybrid.sh ${NODE0} 1   # node 1
+NNODES=4 bash scripts/run_megatron_t5_hybrid.sh ${NODE0} 2   # node 2
+NNODES=4 bash scripts/run_megatron_t5_hybrid.sh ${NODE0} 3   # node 3
+```
+
+---
+
+## Environment Variable Reference
+
+All settings can be overridden by exporting before the script call. Nothing inside the scripts needs to be edited.
 
 | Variable | Default | Description |
 |---|---|---|
-| `HOSTS` | `ws-l4-002 ws-l4-010` | Space-separated list of node hostnames, in rank order |
-| `TASK_NAME` | `sst2` | GLUE task: `sst2`, `mrpc`, or `qnli` |
-| `OUTPUT_DIR` | `./outputs/<strategy>` | Where checkpoints and metrics are saved |
-| `MODEL_NAME` | `t5-large` | HuggingFace model name or local path |
-| `EPOCHS` | `1` | Number of training epochs |
-| `PER_DEVICE_BATCH_SIZE` | `1` | Per-GPU micro-batch size |
-| `EVAL_BATCH_SIZE` | `2` | Per-GPU eval batch size |
-| `GRAD_ACCUM` | `16` | Gradient accumulation steps |
-| `OPTIMIZER` | `adafactor` | Optimizer (`adafactor` or `adamw_torch`) |
-| `MAX_TRAIN_SAMPLES` | `4000` | Subsample training set (0 = use full dataset) |
-| `MAX_EVAL_SAMPLES` | `1000` | Subsample eval set (0 = use full dataset) |
-| `PRECISION_FLAG` | `--bf16` | `--bf16`, `--fp16`, or empty for fp32 |
-| `GRADIENT_CHECKPOINTING` | `--gradient-checkpointing` | Pass empty string to disable |
-| `MASTER_PORT` | `29700` | `torchrun` rendezvous port |
-| `NNODES` | inferred from `HOSTS` | Number of nodes (override if needed) |
+| `HOSTS` | `ws-l4-002 ws-l4-010` | Space-separated node hostnames in rank order |
+| `MEGATRON_DIR` | `../Megatron-DeepSpeed` | Path to your Megatron-DeepSpeed checkout |
+| `MEGATRON_DATA_DIR` | `./megatron_data` | Directory containing indexed dataset files |
+| `WANDB_PROJECT` | `ml710-t5-parallelism` | W&B project name |
+| `WANDB_API_KEY` | _(unset)_ | Your W&B API key |
+| `WANDB_RUN_NAME` | strategy-specific | W&B run name (e.g. `megatron-ddp`) |
+| `TRAIN_ITERS` | `1000` | Total training iterations |
+| `GLOBAL_BATCH_SIZE` | `16` | Global batch size |
+| `MICRO_BATCH_SIZE` | `1` | Per-GPU micro-batch size |
+| `ENCODER_NUM_LAYERS` | `24` | Encoder depth |
+| `DECODER_NUM_LAYERS` | `24` | Decoder depth |
+| `HIDDEN_SIZE` | `1024` | Hidden dimension |
+| `NUM_ATTENTION_HEADS` | `16` | Attention heads |
+| `FFN_HIDDEN_SIZE` | `2816` | FFN intermediate size |
+| `ENCODER_SEQ_LENGTH` | `512` | Encoder input length |
+| `DECODER_SEQ_LENGTH` | `128` | Decoder output length |
+| `LR` | `0.0001` | Peak learning rate |
+| `PRECISION_FLAG` | `--bf16` | `--bf16`, `--fp16`, or omit for fp32 |
+| `MASTER_PORT` | script-specific | torchrun rendezvous port |
+| `OUTPUT_DIR` | `./outputs/<strategy>` | Checkpoint and log directory |
 
-### Recommended Defaults for Benchmarking
-
-These settings fit within typical shared-cluster time and memory limits:
+Quick example — smoke-test with 50 iterations and a custom run name:
 
 ```bash
-export TASK_NAME=sst2
-export EPOCHS=1
-export MAX_TRAIN_SAMPLES=4000
-export MAX_EVAL_SAMPLES=1000
-export PRECISION_FLAG=--bf16
-export GRADIENT_CHECKPOINTING=--gradient-checkpointing
-export PER_DEVICE_BATCH_SIZE=1
-export GRAD_ACCUM=16
+TRAIN_ITERS=50 WANDB_RUN_NAME=smoke-ddp bash scripts/run_megatron_t5_ddp.sh ${NODE0} 0
 ```
 
 ---
 
-## Running (Manual Multi-Node Launch)
+## What Gets Logged
 
-Each launch script must be run **manually on every node** via SSH. The first positional argument is the **master node hostname**; the second is the **node rank** (0-indexed).
+### Terminal output
 
-### Step 1: Pick your nodes and export `HOSTS`
+Megatron prints an iteration log every `LOG_INTERVAL=20` steps:
 
-```bash
-export HOSTS="ws-lx-xxy ws-lx-xxz"   # space-separated, rank order
+```
+iteration       20/    1000 | consumed samples:         320 | elapsed time per iteration (ms): 1234.5 |
+  learning rate: 9.800E-05 | global batch size:    16 | lm loss: 3.456789E+00 |
+  number of skipped iterations:   0 | number of nan iterations:   0 |
+  samples per second: 12.345 | TFLOPs: 56.78
 ```
 
-### Step 2: SSH into each node and run the same script
+### Weights & Biases
 
-**Node 0 (rank 0):**
-```bash
-ssh ws-lx-xxy
-conda activate <env>
-export HOSTS="ws-lx-xxy ws-lx-xxz"
-bash scripts/run_trainer.sh ws-lx-xxy 0
-```
+All runs are logged to your W&B project. Key metrics logged automatically:
 
-**Node 1 (rank 1):**
-```bash
-ssh ws-lx-xxz
-conda activate <env>
-export HOSTS="ws-lx-xxy ws-lx-xxz"
-bash scripts/run_trainer.sh ws-lx-xxy 1
-```
-
-Replace `run_trainer.sh` with the desired strategy script:
-
-```bash
-bash scripts/run_fsdp.sh          ws-lx-xxy <node_rank>   # FSDP
-bash scripts/run_zero2.sh         ws-lx-xxy <node_rank>   # ZeRO-2
-bash scripts/run_zero3.sh         ws-lx-xxy <node_rank>   # ZeRO-3
-bash scripts/run_zero3_offload.sh ws-lx-xxy <node_rank>   # ZeRO-3 + CPU offload
-```
-
----
-
-## W&B Tracking
-
-All launch scripts have W&B tracking **enabled by default**. Runs are automatically logged to the `t5_mlsys` entity under the `deepseed` project, with a run name derived from the strategy and task (e.g., `ddp-sst2`, `fsdp-sst2`, `zero3-offload-mrpc`).
-
-### Setup
-
-```bash
-pip install wandb
-wandb login   # paste your API key from https://wandb.ai/authorize
-```
-
-### Defaults
-
-| Variable | Default | Description |
+| Metric | W&B key | Notes |
 |---|---|---|
-| `WANDB_ENTITY` | `t5_mlsys` | W&B team / entity |
-| `WANDB_PROJECT` | `deepseed` | W&B project name |
-| `WANDB_RUN_NAME` | `<strategy>-<task>` | Auto-named per script (e.g. `zero3-sst2`) |
+| Training loss | `lm loss` | Span-corruption cross-entropy |
+| Throughput | `samples per second` | Primary benchmark metric |
+| Iteration time | `elapsed time per iteration` | In milliseconds |
+| Learning rate | `learning rate` | |
+| Loss scale | `loss scale` | bf16 dynamic scaling |
 
-### Overriding
+To compare strategies: open the project in W&B, select all runs, and plot `samples per second` vs `iteration` on a single chart.
 
-```bash
-export WANDB_PROJECT=my-project
-export WANDB_RUN_NAME=custom-run-name
-bash scripts/run_zero3.sh ws-lx-xxy 0
-```
+### GPU memory (manual)
 
-### Disabling W&B
+Run this in a separate terminal on each node during training:
 
 ```bash
-export WANDB_PROJECT=""
-bash scripts/run_trainer.sh ws-lx-xxy 0
-```
-
-### What Gets Logged
-
-The HuggingFace Trainer reports the following to W&B automatically:
-
-| Metric | Description |
-|---|---|
-| `train/loss` | Training loss per step |
-| `train/learning_rate` | LR schedule |
-| `train/samples_per_second` | Throughput |
-| `train/steps_per_second` | Step rate |
-| `eval/loss` | Eval loss per epoch |
-| `eval/accuracy` | Exact-match accuracy |
-| `eval/runtime` | Eval wall-clock time |
-
----
-
-## What Gets Measured
-
-After each run, the trainer saves the following to `OUTPUT_DIR`:
-- `eval_results.json` — evaluation accuracy
-- `trainer_state.json` — per-step loss and runtime logs (use for throughput / samples-per-second)
-- `final_model/` — the fine-tuned model checkpoint
-
-**Key metrics for benchmarking across strategies:**
-- **Training throughput** (samples/sec) — from `trainer_state.json` → `train_samples_per_second`
-- **Peak GPU memory** — monitor with `nvidia-smi` or `torch.cuda.max_memory_allocated()`
-- **Eval accuracy** — to confirm all strategies converge to equivalent results
-- **Wall-clock time** — total runtime per epoch
-
----
-
-## Useful Overrides
-
-```bash
-export TASK_NAME=sst2
-export OUTPUT_DIR=/shared/t5_runs/ddp
-export EPOCHS=1
-export PER_DEVICE_BATCH_SIZE=1
-export GRAD_ACCUM=16
-export OPTIMIZER=adafactor
-export MAX_TRAIN_SAMPLES=4000
-export MAX_EVAL_SAMPLES=1000
-export MASTER_PORT=29700
-```
-
-If memory is tight:
-
-```bash
-export PER_DEVICE_BATCH_SIZE=1
-export GRAD_ACCUM=16
+nvidia-smi --query-gpu=memory.used,memory.free --format=csv -l 5
 ```
 
 ---
 
-## Hardware
+## Troubleshooting
 
-Tested configuration:
-- **2 nodes**, 1 GPU per node
-- **GPU**: NVIDIA RTX 5000 (32 GB VRAM)
-- **Interconnect**: SSH-based manual launch (no InfiniBand assumed)
+**`Missing or empty Megatron indexed dataset files`**
+Run `bash scripts/prepare_xsum_megatron.sh` first and confirm `.bin`/`.idx` exist under `megatron_data/`.
 
----
+**`srcIndex < srcSelectDimSize` CUDA assertion (out-of-bounds embedding lookup)**
+The patch was not applied. Follow Step 8 — the `vocab_size` fix is required for T5 sentinel tokens to fit in the embedding table.
 
-## Strategy Summary for Benchmarking
+**`assert isinstance(model[0], deepspeed.PipelineEngine)` AssertionError**
+The `--no-pipeline-parallel` flag is missing from a ZeRO script. This is fixed in the scripts in this repo; make sure you have the latest version.
 
-| Strategy | Memory Efficiency | Communication Overhead | Notes |
-|---|---|---|---|
-| DDP | ❌ Lowest | ✅ Lowest (grad all-reduce only) | Baseline |
-| FSDP | ✅ High | 🔶 Medium | PyTorch-native; good for mid-size models |
-| ZeRO-2 | ✅ Medium | ✅ Low-Medium | Good throughput, meaningful memory savings |
-| ZeRO-3 | ✅✅ Very High | 🔶 High | Best GPU memory; more comm |
-| ZeRO-3 Offload | ✅✅✅ Highest | ❌ Highest | For extreme memory constraints; slowest |
+**ZeRO-2 / ZeRO-3 hangs after "training …" with no iteration output**
+`overlap_comm` was enabled. This is already set to `false` in the configs here. If you edited the configs, set `"overlap_comm": false` in the relevant `ds_configs/*.json`.
+
+**`Unable to infer NODE_RANK`**
+Pass the rank explicitly: `bash scripts/run_megatron_t5_ddp.sh ${NODE0} 0` on node 0, and `... 1` on node 1.
+
+**`NPROC_PER_NODE > LOCAL_GPU_COUNT`**
+Each node only has 1 GPU. Do not set `NPROC` above 1 for any script except `run_megatron_t5_hybrid.sh`.
+
+**Port already in use**
+Each script uses a unique default port (29800–29812). Override if needed:
+```bash
+MASTER_PORT=29900 bash scripts/run_megatron_t5_ddp.sh ${NODE0} 0
+```
+
+**Apex build fails**
+Set `export CUDA_HOME=/usr/local/cuda-12.4` and retry. See [MEGATRON.md](MEGATRON.md) for the full workaround including how to bypass the version guard.
+
+**`WARNING: WANDB writing requested but no legit wandb project`**
+`WANDB_API_KEY` is not exported. Set it with `export WANDB_API_KEY=<your-key>` before launching.
+
+**DeepSpeed version incompatibility**
+Use exactly `deepspeed==0.17.6`. Newer versions have API changes that break the Megatron-DeepSpeed integration used here.

@@ -1,12 +1,9 @@
 {
   "bf16": {
-    "enabled": "auto"
-  },
-  "fp16": {
-    "enabled": "auto"
+    "enabled": true
   },
   "zero_optimization": {
-    "stage": 2,
+    "stage": 1,
     "allgather_partitions": true,
     "allgather_bucket_size": 200000000,
     "overlap_comm": true,
@@ -14,9 +11,9 @@
     "reduce_bucket_size": 200000000,
     "contiguous_gradients": true
   },
-  "gradient_accumulation_steps": "auto",
+  "gradient_accumulation_steps": 8,
   "gradient_clipping": 1.0,
-  "train_micro_batch_size_per_gpu": "auto",
-  "steps_per_print": 1000,
+  "train_micro_batch_size_per_gpu": 1,
+  "steps_per_print": 20,
   "wall_clock_breakdown": false
 }
