@@ -9,8 +9,8 @@ build_host_array
 MASTER_ADDR="$(resolve_master_addr "${1:-}")"
 NODE_RANK="$(resolve_node_rank "${2:-}")"
 MASTER_PORT="${MASTER_PORT:-29812}"
-NNODES="${NNODES:-${#HOST_ARRAY[@]}}"
-NPROC_PER_NODE="${NPROC_PER_NODE:-2}"
+NNODES="${NNODES:-4}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
@@ -56,9 +56,9 @@ NUM_WORKERS="${NUM_WORKERS:-2}"
 DATA_SPLIT="${DATA_SPLIT:-949,50,1}"
 resolve_megatron_training_schedule
 EVAL_ITERS="${EVAL_ITERS:-20}"
-EVAL_INTERVAL="${EVAL_INTERVAL:-200}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-$(((TRAIN_ITERS + 9) / 10))}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-$(((TRAIN_ITERS + 4) / 5))}"
-LOG_INTERVAL="${LOG_INTERVAL:-20}"
+LOG_INTERVAL="${LOG_INTERVAL:-1}"
 VOCAB_EXTRA_IDS="${VOCAB_EXTRA_IDS:-100}"
 
 PRECISION_FLAG="${PRECISION_FLAG:---bf16}"
@@ -87,9 +87,7 @@ fi
 if [[ -n "${LOCAL_GPU_COUNT}" ]] && (( NPROC_PER_NODE > LOCAL_GPU_COUNT )); then
   echo "NPROC_PER_NODE=${NPROC_PER_NODE} but only ${LOCAL_GPU_COUNT} GPU(s) are visible on this node." >&2
   echo "Hybrid parallelism requires one distinct GPU per local rank." >&2
-  echo "Use either:" >&2
-  echo "  - 2 GPUs per node with NPROC_PER_NODE=2 across 2 nodes, or" >&2
-  echo "  - 1 GPU per node with NPROC_PER_NODE=1 across 4 nodes." >&2
+  echo "Use 1 GPU per node with NPROC_PER_NODE=1 across 4 nodes." >&2
   exit 1
 fi
 
