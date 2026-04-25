@@ -152,7 +152,17 @@ cd ..
 Clone it **next to** (not inside) this repository, on **both nodes**:
 
 ```bash
-git -C ../Megatron-DeepSpeed apply ../T5-Parallelism/patches/0001-fix-make-Megatron-compatible-with-t5-pipeline-parall.patch
+cd ..   # go up one level from T5-Parallelism
+git clone https://github.com/deepspeedai/Megatron-DeepSpeed.git
+cd Megatron-DeepSpeed
+```
+
+Your directory tree should look like:
+
+```
+parent-dir/
+├── T5-Parallelism/    ← this repo
+└── Megatron-DeepSpeed/
 ```
 
 ---
@@ -250,36 +260,7 @@ This script:
 1. Downloads XSum from HuggingFace via `export_xsum_corpus.py` → `megatron_data/xsum_text.jsonl`
 2. Tokenises with `google-t5/t5-large` and builds Megatron indexed binary files
 
-- exports XSum to JSONL
-- tokenizes it using the configured Megatron tokenizer
-- builds `mmap` `.bin/.idx` dataset files under `megatron_data/`
-
-By default it prepares the **document-level** dataset used by the Megatron launchers.
-
-#### Step-by-Step Dataset Generation
-
-From a fresh checkout, the recommended sequence is:
-
-1. Make sure the sibling `Megatron-DeepSpeed` checkout exists.
-2. Apply the local Megatron patch:
-
-```bash
-git -C ../Megatron-DeepSpeed apply ../T5-Parallelism/patches/0001-fix-make-Megatron-compatible-with-t5-pipeline-parall.patch
-```
-
-3. Verify the Megatron preprocessing entrypoint exists:
-
-```bash
-test -f ../Megatron-DeepSpeed/tools/preprocess_data.py
-```
-
-4. Generate the Megatron-ready XSum dataset:
-
-```bash
-bash scripts/prepare_xsum_megatron.sh
-```
-
-5. Confirm the indexed dataset files were created:
+Confirm the files exist and are non-empty:
 
 ```bash
 ls -lh megatron_data/xsum_text_document.bin megatron_data/xsum_text_document.idx
@@ -486,44 +467,13 @@ iteration       20/    1000 | consumed samples:         320 | elapsed time per i
 
 All runs are logged to your W&B project. Key metrics logged automatically:
 
-**Node 1 (rank 1):**
-```bash
-ssh ws-lx-xxz
-conda activate <env>
-export HOSTS="ws-lx-xxy ws-lx-xxz"
-bash scripts/run_trainer.sh ws-lx-xxy 1
-```
-
-Replace `run_trainer.sh` with the desired strategy script:
-
-```bash
-bash scripts/run_fsdp.sh          ws-lx-xxy <node_rank>   # FSDP
-bash scripts/run_zero2.sh         ws-lx-xxy <node_rank>   # ZeRO-2
-bash scripts/run_zero3.sh         ws-lx-xxy <node_rank>   # ZeRO-3
-bash scripts/run_zero3_offload.sh ws-lx-xxy <node_rank>   # ZeRO-3 + CPU offload
-```
-
----
-
-## W&B Tracking
-
-All launch scripts have W&B tracking **enabled by default**. Runs are automatically logged to the `t5_mlsys` entity under the `deepseed` project, with a run name derived from the strategy and dataset (e.g., `ddp-xsum`, `zero3-offload-xsum`, `megatron-pipeline-xsum`).
-
-### Setup
-
-```bash
-pip install wandb
-wandb login   # paste your API key from https://wandb.ai/authorize
-```
-
-### Defaults
-
-| Variable | Default | Description |
+| Metric | W&B key | Notes |
 |---|---|---|
-| `WANDB_ENTITY` | `t5_mlsys` | W&B team / entity |
-| `WANDB_PROJECT` | `deepseed` | W&B project name |
-| `WANDB_RUN_NAME` | `<strategy>-xsum` | Auto-named per script |
-| `WANDB_SAVE_DIR` | `${OUTPUT_DIR}/wandb` | Local W&B directory for Megatron runs |
+| Training loss | `lm loss` | Span-corruption cross-entropy |
+| Throughput | `samples per second` | Primary benchmark metric |
+| Iteration time | `elapsed time per iteration` | In milliseconds |
+| Learning rate | `learning rate` | |
+| Loss scale | `loss scale` | bf16 dynamic scaling |
 
 To compare strategies: open the project in W&B, select all runs, and plot `samples per second` vs `iteration` on a single chart.
 
@@ -532,71 +482,7 @@ To compare strategies: open the project in W&B, select all runs, and plot `sampl
 Run this in a separate terminal on each node during training:
 
 ```bash
-export WANDB_PROJECT=my-project
-export WANDB_RUN_NAME=custom-run-name
-bash scripts/run_zero3.sh ws-lx-xxy 0
-```
-
-### Disabling W&B
-
-```bash
-export WANDB_PROJECT=""
-bash scripts/run_trainer.sh ws-lx-xxy 0
-```
-
-### What Gets Logged
-
-The HuggingFace Trainer scripts (`run_trainer.sh`, `run_fsdp.sh`, `run_zero*.sh`) report the following to W&B automatically:
-
-| Metric | Description |
-|---|---|
-| `train/loss` | Training loss per step |
-| `train/learning_rate` | LR schedule |
-| `train/samples_per_second` | Throughput |
-| `train/steps_per_second` | Step rate |
-| `eval/loss` | Eval loss per epoch |
-| `eval/rouge1`, `eval/rouge2`, `eval/rougeL` | ROUGE scores |
-| `eval/exact_match` | Normalized exact-match score |
-| `eval/runtime` | Eval wall-clock time |
-
-The Megatron scripts (`run_megatron_t5_*.sh`) use Megatron-DeepSpeed's native W&B writer. They log loss, learning rate, throughput, validation perplexity when enabled by Megatron, and the full Megatron argument config.
-
----
-
-## What Gets Measured
-
-After each run, the trainer saves the following to `OUTPUT_DIR`:
-- `eval_results.json` — evaluation accuracy
-- `trainer_state.json` — per-step loss and runtime logs (use for throughput / samples-per-second)
-- `final_model/` — the fine-tuned model checkpoint
-
-**Key metrics for benchmarking across strategies:**
-- **Training throughput** (samples/sec) — from `trainer_state.json` → `train_samples_per_second`
-- **Peak GPU memory** — monitor with `nvidia-smi` or `torch.cuda.max_memory_allocated()`
-- **Eval accuracy** — to confirm all strategies converge to equivalent results
-- **Wall-clock time** — total runtime per epoch
-
----
-
-## Useful Overrides
-
-```bash
-export TASK_NAME=sst2
-export OUTPUT_DIR=/shared/t5_runs/ddp
-export EPOCHS=1
-export PER_DEVICE_BATCH_SIZE=1
-export GRAD_ACCUM=16
-export OPTIMIZER=adafactor
-export MAX_TRAIN_SAMPLES=4000
-export MAX_EVAL_SAMPLES=1000
-export MASTER_PORT=29700
-```
-
-If memory is tight:
-
-```bash
-export PER_DEVICE_BATCH_SIZE=1
-export GRAD_ACCUM=16
+nvidia-smi --query-gpu=memory.used,memory.free --format=csv -l 5
 ```
 
 ---

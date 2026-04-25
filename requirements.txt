@@ -2,4 +2,5 @@ deepspeed
 six
 transformers
 sentencepiece
-nltk
+datasets
+wandb
