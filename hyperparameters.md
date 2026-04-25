@@ -4,50 +4,42 @@ Defaults below are taken from the run scripts and config files as written, assum
 
 ## Launch and Parallelism
 
-| Hyperparameter | Hybrid | Pipeline | Tensor | ZeRO-2 | ZeRO-3 | ZeRO-3 Offload | FSDP |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Script | `scripts/run_megatron_t5_hybrid.sh` | `scripts/run_megatron_t5_pipeline.sh` | `scripts/run_megatron_t5_tensor.sh` | `scripts/run_zero2.sh` | `scripts/run_zero3.sh` | `scripts/run_zero3_offload.sh` | `scripts/run_fsdp.sh` |
-| Backend | Megatron | Megatron | Megatron | HF Trainer + DeepSpeed | HF Trainer + DeepSpeed | HF Trainer + DeepSpeed | HF Trainer + FSDP |
-| Model | T5-large architecture; tokenizer `google-t5/t5-large` | T5-large architecture; tokenizer `google-t5/t5-large` | T5-large architecture; tokenizer `google-t5/t5-large` | `t5-large` | `t5-large` | `t5-large` | `t5-large` |
-| Nodes default | `4` | `2` | `2` | `2` | `2` | `2` | `2` |
-| Processes per node | `1` | `1` | `1` | `1` | `1` | `1` | `1` |
-| Total processes default | `4` | `2` | `2` | `2` | `2` | `2` | `2` |
-| Tensor parallel size | `2` | `1` | `2` | n/a | n/a | n/a | n/a |
-| Pipeline parallel size | `2` | `2` | `1` | n/a | n/a | n/a | n/a |
-| Pipeline split rank | `1` | `1` | n/a | n/a | n/a | n/a | n/a |
-| Data parallel groups default | `1` | effectively `1` | effectively `1` | DDP/ZeRO across `2` procs | DDP/ZeRO across `2` procs | DDP/ZeRO across `2` procs | FSDP across `2` procs |
-| Master port | `29812` | `29810` | `29811` | `29702` | `29703` | `29704` | `29701` |
-| Precision | `bf16` | `bf16` | `bf16` | `bf16` | `bf16` | `bf16` | `bf16` |
+| Strategy | Script | Backend | Model | Nodes | Procs/GPU per node | Total procs/GPUs | TP | PP | PP split | Data-parallel degree | Port | Precision |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| Hybrid | `scripts/run_megatron_t5_hybrid.sh` | Megatron | T5-large architecture; tokenizer `google-t5/t5-large` | `4` | `1` | `4` | `2` | `2` | `1` | `1` | `29812` | `bf16` |
+| Pipeline | `scripts/run_megatron_t5_pipeline.sh` | Megatron | T5-large architecture; tokenizer `google-t5/t5-large` | `2` | `1` | `2` | `1` | `2` | `1` | `1` | `29810` | `bf16` |
+| Tensor | `scripts/run_megatron_t5_tensor.sh` | Megatron | T5-large architecture; tokenizer `google-t5/t5-large` | `2` | `1` | `2` | `2` | `1` | n/a | `1` | `29811` | `bf16` |
+| Megatron ZeRO-1 | `scripts/run_megatron_t5_zero1.sh` | Megatron + DeepSpeed | T5-large architecture; tokenizer `google-t5/t5-large` | `2` | `1` | `2` | `1` | `1` | n/a | `2` | `29801` | `bf16` |
+| Megatron ZeRO-2 | `scripts/run_megatron_t5_zero2.sh` | Megatron + DeepSpeed | T5-large architecture; tokenizer `google-t5/t5-large` | `2` | `1` | `2` | `1` | `1` | n/a | `2` | `29802` | `bf16` |
+| Megatron ZeRO-3 | `scripts/run_megatron_t5_zero3.sh` | Megatron + DeepSpeed | T5-large architecture; tokenizer `google-t5/t5-large` | `2` | `1` | `2` | `1` | `1` | n/a | `2` | `29803` | `bf16` |
+| Megatron ZeRO-3 Offload | `scripts/run_megatron_t5_zero3_offload.sh` | Megatron + DeepSpeed | T5-large architecture; tokenizer `google-t5/t5-large` | `2` | `1` | `2` | `1` | `1` | n/a | `2` | `29804` | `bf16` |
+| HF ZeRO-2 | `scripts/run_zero2.sh` | HF Trainer + DeepSpeed | `t5-large` | `2` | `1` | `2` | n/a | n/a | n/a | `2` | `29702` | `bf16` |
+| HF ZeRO-3 | `scripts/run_zero3.sh` | HF Trainer + DeepSpeed | `t5-large` | `2` | `1` | `2` | n/a | n/a | n/a | `2` | `29703` | `bf16` |
+| HF ZeRO-3 Offload | `scripts/run_zero3_offload.sh` | HF Trainer + DeepSpeed | `t5-large` | `2` | `1` | `2` | n/a | n/a | n/a | `2` | `29704` | `bf16` |
+| FSDP | `scripts/run_fsdp.sh` | HF Trainer + FSDP | `t5-large` | `2` | `1` | `2` | n/a | n/a | n/a | `2` | `29701` | `bf16` |
 
 ## Training Hyperparameters
 
-| Hyperparameter | Hybrid | Pipeline | Tensor | ZeRO-2 | ZeRO-3 | ZeRO-3 Offload | FSDP |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Epochs | `1` | `1` | `1` | `1` | `1` | `1` | `1` |
-| Micro/per-device train batch | `1` | `1` | `1` | `8` | `8` | `8` | `8` |
-| Global/effective batch | `16` | `16` | `16` | `16` (`8 * 2 * 1`) | `16` (`8 * 2 * 1`) | `16` (`8 * 2 * 1`) | `16` (`8 * 2 * 1`) |
-| Eval batch size | Megatron eval iters based | same | same | `8` | `8` | `8` | `8` |
-| Gradient accumulation | derived by Megatron to reach global batch `16` | same | same | `1` | `1` | `1` | `1` |
-| Learning rate | `1e-4` | `1e-4` | `1e-4` | `1e-4` | `1e-4` | `1e-4` | `1e-4` |
-| Min LR | `1e-5` | `1e-5` | `1e-5` | n/a | n/a | n/a | n/a |
-| LR decay style | `linear` | `linear` | `linear` | `linear` HF default | `linear` HF default | `linear` HF default | `linear` HF default |
-| LR warmup | `0.01` fraction | `0.01` fraction | `0.01` fraction | `0.01` ratio | `0.01` ratio | `0.01` ratio | `0.01` ratio |
-| Weight decay | `0.01` | `0.01` | `0.01` | `0.01` from `train.py` | `0.01` from `train.py` | `0.01` from `train.py` | `0.01` from `train.py` |
-| Optimizer | Megatron default, not set in script | same | same | `adamw_torch` | `adamw_torch` | `adamw_torch` | `adamw_torch` |
-| Gradient clipping | `1.0` | `1.0` | `1.0` | `1.0` | `1.0` | `1.0` | `1.0` |
-| Gradient checkpointing | disabled | disabled | disabled | disabled | disabled | disabled | disabled |
-| Train iterations | computed from XSum JSONL, split, global batch, epochs | same | same | epoch-based | epoch-based | epoch-based | epoch-based |
-| LR decay iters | defaults to `TRAIN_ITERS` | same | same | n/a | n/a | n/a | n/a |
-| Save interval/strategy | every 20% of iterations | same | same | every 20% of steps | every 20% of steps | every 20% of steps | every 20% of steps |
-| Eval interval/strategy | every 10% of iterations | same | same | every 10% of steps | every 10% of steps | every 10% of steps | every 10% of steps |
-| Eval iters | `20` | `20` | `20` | n/a | n/a | n/a | n/a |
-| Log interval/steps | every iteration | every iteration | every iteration | every step | every step | every step | every step |
-| Save total limit | not set | not set | not set | `2` from `train.py` | `2` from `train.py` | `2` from `train.py` | `2` from `train.py` |
-| Seed | not set in script | not set in script | not set in script | `42` from `train.py` | `42` from `train.py` | `42` from `train.py` | `42` from `train.py` |
+| Strategy group | Micro/per-device train batch | Global/effective batch | Gradient accumulation | LR | Min LR | LR decay | Warmup | Weight decay | Grad clip | Grad checkpointing | Save | Eval | Log |
+|---|---:|---:|---|---:|---:|---|---:|---:|---:|---|---|---|---|
+| Megatron parallel: hybrid/pipeline/tensor | `1` | `16` | derived by Megatron | `1e-4` | `1e-5` | `linear` | `0.01` fraction | `0.01` | `1.0` | disabled | every 20% of iterations | every 10% of iterations; `20` eval iters | every iteration |
+| Megatron ZeRO: ZeRO-1/2/3/offload | `1` | `16` | DeepSpeed config: `8` | `1e-4` | `1e-5` | `linear` | `0.01` fraction | `0.01` | `1.0` | disabled | every 20% of iterations | every 10% of iterations; `20` eval iters | every iteration |
+| HF ZeRO/FSDP | `8` | `16` (`8 * 2 * 1`) | `1` | `1e-4` | n/a | `linear` HF default | `0.01` ratio | `0.01` | `1.0` | disabled | every 20% of steps | every 10% of steps | every step |
+
+Common values:
+
+| Hyperparameter | Value |
+|---|---:|
+| Epochs | `1` |
+| Megatron train iterations | computed from XSum JSONL, data split, global batch, and epochs |
+| HF train steps | epoch-based, with launcher-computed save/eval step intervals |
+| HF eval batch size | `8` |
+| HF save total limit | `2` from `train.py` |
+| HF seed | `42` from `train.py` |
 
 ## Model and Sequence/Data Settings
 
-| Hyperparameter | Megatron Hybrid/Pipeline/Tensor | ZeRO-2 / ZeRO-3 / Offload / FSDP |
+| Hyperparameter | Megatron strategies | HF ZeRO/FSDP strategies |
 |---|---:|---:|
 | Encoder layers | `24` | HF `t5-large` architecture |
 | Decoder layers | `24` | HF `t5-large` architecture |
@@ -60,6 +52,7 @@ Defaults below are taken from the run scripts and config files as written, assum
 | Generation max length | n/a | `128` |
 | Max position embeddings | `512` | HF model config |
 | Task/data | Megatron indexed XSum corpus | `xsum` |
+| Data/objective | T5 span-corruption over exported XSum text | supervised XSum summarization |
 | Data split | `949,50,1` | train/eval subsets |
 | Max train samples | full prepared Megatron corpus | `5000` |
 | Max eval samples | split/eval iters | `1000` |
@@ -72,29 +65,25 @@ Defaults below are taken from the run scripts and config files as written, assum
 
 ## DeepSpeed and FSDP Config
 
-| Config knob | ZeRO-2 | ZeRO-3 | ZeRO-3 Offload | FSDP |
-|---|---:|---:|---:|---:|
-| Config file | `ds_configs/zero2.json` | `ds_configs/zero3.json` | `ds_configs/zero3_offload.json` | `fsdp_config.json` |
-| ZeRO stage | `2` | `3` | `3` | n/a |
-| BF16/FP16 | `auto` | `auto` | `auto` | script passes `bf16` |
-| Train micro batch | `auto` | `auto` | `auto` | script passes `8` |
-| Gradient accumulation | `auto` | `auto` | `auto` | script passes `1` |
-| Overlap communication | `true` | `true` | `true` | n/a |
-| Contiguous gradients | `true` | `true` | `true` | n/a |
-| Reduce bucket size | `200000000` | `100000000` | `100000000` | n/a |
-| Allgather bucket size | `200000000` | n/a | n/a | n/a |
-| Stage 3 prefetch bucket | n/a | `50000000` | `50000000` | n/a |
-| Param persistence threshold | n/a | `10000` | `10000` | n/a |
-| Max live parameters | n/a | `1000000000` | not set | n/a |
-| Max reuse distance | n/a | `1000000000` | not set | n/a |
-| Gather 16-bit weights on save | n/a | `true` | `true` | n/a |
-| Optimizer offload | none | none | CPU, pinned memory | n/a |
-| Parameter offload | none | none | CPU, pinned memory | n/a |
-| FSDP mode | n/a | n/a | n/a | `full_shard auto_wrap` |
-| FSDP wrap class | n/a | n/a | n/a | `T5Block` |
-| FSDP backward prefetch | n/a | n/a | n/a | `backward_pre` |
-| FSDP forward prefetch | n/a | n/a | n/a | `false` |
-| FSDP limit all gathers | n/a | n/a | n/a | `true` |
-| FSDP use original parameters | n/a | n/a | n/a | `true` |
-| FSDP sync module states | n/a | n/a | n/a | `false` |
-| FSDP activation checkpointing | n/a | n/a | n/a | `false` |
+| Strategy | Config file | Stage/mode | BF16 | Grad accumulation | Micro batch/GPU | Grad clip | Overlap comm | Reduce bucket | Allgather bucket | Stage 3 prefetch | Stage 3 persistence | Stage 3 max live/reuse | Save gathered 16-bit weights | Optimizer offload | Parameter offload |
+|---|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---|---|---|
+| Megatron ZeRO-1 | `ds_configs/megatron_zero1.json` | ZeRO stage `1` | `true` | `8` | `1` | `1.0` | `true` | `200000000` | `200000000` | n/a | n/a | n/a | n/a | none | none |
+| Megatron ZeRO-2 | `ds_configs/megatron_zero2.json` | ZeRO stage `2` | `true` | `8` | `1` | `1.0` | `false` | `200000000` | `200000000` | n/a | n/a | n/a | n/a | none | none |
+| Megatron ZeRO-3 | `ds_configs/megatron_zero3.json` | ZeRO stage `3` | `true` | `8` | `1` | `1.0` | `false` | `100000000` | n/a | `50000000` | `10000` | `1000000000` | `true` | none | none |
+| Megatron ZeRO-3 Offload | `ds_configs/megatron_zero3_offload.json` | ZeRO stage `3` | `true` | `8` | `1` | `1.0` | `false` | `100000000` | n/a | `50000000` | `10000` | `1000000000` | `true` | CPU, pinned memory | CPU, pinned memory |
+| HF ZeRO-2 | `ds_configs/zero2.json` | ZeRO stage `2` | `auto` | `auto` | `auto` | `1.0` | `true` | `200000000` | `200000000` | n/a | n/a | n/a | n/a | none | none |
+| HF ZeRO-3 | `ds_configs/zero3.json` | ZeRO stage `3` | `auto` | `auto` | `auto` | `1.0` | `true` | `100000000` | n/a | `50000000` | `10000` | `1000000000` | `true` | none | none |
+| HF ZeRO-3 Offload | `ds_configs/zero3_offload.json` | ZeRO stage `3` | `auto` | `auto` | `auto` | `1.0` | `true` | `100000000` | n/a | `50000000` | `10000` | not set | `true` | CPU, pinned memory | CPU, pinned memory |
+| FSDP | `fsdp_config.json` | `full_shard auto_wrap` | script passes `bf16` | script passes `1` | script passes `8` | script passes `1.0` | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
+
+FSDP-specific settings:
+
+| Config knob | Value |
+|---|---:|
+| Wrap class | `T5Block` |
+| Backward prefetch | `backward_pre` |
+| Forward prefetch | `false` |
+| Limit all gathers | `true` |
+| Use original parameters | `true` |
+| Sync module states | `false` |
+| Activation checkpointing | `false` |
