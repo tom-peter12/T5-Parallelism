@@ -9,8 +9,8 @@ build_host_array
 MASTER_ADDR="$(resolve_master_addr "${1:-}")"
 NODE_RANK="$(resolve_node_rank "${2:-}")"
 MASTER_PORT="${MASTER_PORT:-29812}"
-NNODES="${NNODES:-${#HOST_ARRAY[@]}}"
-NPROC_PER_NODE="${NPROC_PER_NODE:-2}"
+NNODES="${NNODES:-4}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
@@ -43,8 +43,7 @@ MAX_POSITION_EMBEDDINGS="${MAX_POSITION_EMBEDDINGS:-512}"
 
 MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-1}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-16}"
-TRAIN_ITERS="${TRAIN_ITERS:-1000}"
-LR_DECAY_ITERS="${LR_DECAY_ITERS:-1000}"
+EPOCHS="${EPOCHS:-1}"
 LR="${LR:-0.0001}"
 MIN_LR="${MIN_LR:-0.00001}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.01}"
@@ -55,14 +54,18 @@ SHORT_SEQ_PROB="${SHORT_SEQ_PROB:-0.1}"
 
 NUM_WORKERS="${NUM_WORKERS:-2}"
 DATA_SPLIT="${DATA_SPLIT:-949,50,1}"
+resolve_megatron_training_schedule
 EVAL_ITERS="${EVAL_ITERS:-20}"
-EVAL_INTERVAL="${EVAL_INTERVAL:-200}"
-SAVE_INTERVAL="${SAVE_INTERVAL:-500}"
-LOG_INTERVAL="${LOG_INTERVAL:-20}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-$(((TRAIN_ITERS + 9) / 10))}"
+SAVE_INTERVAL="${SAVE_INTERVAL:-$(((TRAIN_ITERS + 4) / 5))}"
+LOG_INTERVAL="${LOG_INTERVAL:-1}"
 VOCAB_EXTRA_IDS="${VOCAB_EXTRA_IDS:-100}"
 
 PRECISION_FLAG="${PRECISION_FLAG:---bf16}"
 ADDITIONAL_ARGS="${ADDITIONAL_ARGS:-}"
+WANDB_ENTITY="${WANDB_ENTITY:-t5_mlsys}"
+WANDB_PROJECT="${WANDB_PROJECT:-megatron}"
+WANDB_RUN_NAME="${WANDB_RUN_NAME:-megatron-hybrid-xsum}"
 
 TOTAL_PROCS=$((NNODES * NPROC_PER_NODE))
 MODEL_PARALLEL_SIZE=$((TENSOR_MODEL_PARALLEL_SIZE * PIPELINE_MODEL_PARALLEL_SIZE))
@@ -84,9 +87,7 @@ fi
 if [[ -n "${LOCAL_GPU_COUNT}" ]] && (( NPROC_PER_NODE > LOCAL_GPU_COUNT )); then
   echo "NPROC_PER_NODE=${NPROC_PER_NODE} but only ${LOCAL_GPU_COUNT} GPU(s) are visible on this node." >&2
   echo "Hybrid parallelism requires one distinct GPU per local rank." >&2
-  echo "Use either:" >&2
-  echo "  - 2 GPUs per node with NPROC_PER_NODE=2 across 2 nodes, or" >&2
-  echo "  - 1 GPU per node with NPROC_PER_NODE=1 across 4 nodes." >&2
+  echo "Use 1 GPU per node with NPROC_PER_NODE=1 across 4 nodes." >&2
   exit 1
 fi
 
@@ -112,6 +113,7 @@ if (( PIPELINE_MODEL_PARALLEL_SPLIT_RANK <= 0 || PIPELINE_MODEL_PARALLEL_SPLIT_R
 fi
 
 mkdir -p "${OUTPUT_DIR}" "${CHECKPOINT_PATH}"
+build_megatron_wandb_args
 
 if [[ ! -s "${DATA_PATH}.bin" || ! -s "${DATA_PATH}.idx" ]]; then
   echo "Missing or empty Megatron indexed dataset files for prefix: ${DATA_PATH}" >&2
@@ -147,7 +149,13 @@ echo "pipeline_split_rank   : ${PIPELINE_MODEL_PARALLEL_SPLIT_RANK}"
 echo "data_parallel_groups  : $((TOTAL_PROCS / MODEL_PARALLEL_SIZE))"
 echo "encoder/decoder layers: ${ENCODER_NUM_LAYERS}/${DECODER_NUM_LAYERS}"
 echo "micro/global batch    : ${MICRO_BATCH_SIZE}/${GLOBAL_BATCH_SIZE}"
+echo "epochs                : ${EPOCHS}"
 echo "train_iters           : ${TRAIN_ITERS}"
+echo "train_jsonl           : ${MEGATRON_XSUM_JSONL}"
+echo "save_interval         : ${SAVE_INTERVAL}"
+echo "wandb_entity          : ${WANDB_ENTITY:-}"
+echo "wandb_project         : ${WANDB_PROJECT:-}"
+echo "wandb_run             : ${WANDB_RUN_NAME:-}"
 
 torchrun \
   --nnodes="${NNODES}" \
@@ -195,5 +203,6 @@ torchrun \
   --distributed-backend nccl \
   --save "${CHECKPOINT_PATH}" \
   --load "${CHECKPOINT_PATH}" \
+  "${MEGATRON_WANDB_ARGS[@]}" \
   ${PRECISION_FLAG} \
   ${ADDITIONAL_ARGS}

@@ -17,7 +17,7 @@ Benchmarking suite comparing distributed training strategies on **T5-Large** usi
 
 **Fixed across all runs:** T5-Large architecture (24+24 layers, hidden=1024, heads=16, FFN=2816), XSum dataset, `global_batch_size=16`, `micro_batch_size=1`, `train_iters=1000`, bf16, AdamW (`lr=1e-4`, cosine decay).
 
-**Hardware target:** 2 nodes, 1 GPU each (L4 GPUs on a SLURM cluster). Tensor/pipeline parallelism use both nodes as a single model-parallel group.
+**Hardware target:** 2 nodes, 1 GPU each (RTX 5000 GPUs on a SLURM cluster). Tensor/pipeline parallelism use both nodes as a single model-parallel group.
 
 ---
 
@@ -55,7 +55,7 @@ T5-Parallelism/
 ## Prerequisites
 
 - Linux with CUDA 12.4
-- Two nodes each with at least 1 NVIDIA GPU (L4 / A100 / etc.)
+- Two nodes each with at least 1 NVIDIA GPU (RTX 5000 / A100 / etc.)
 - Conda
 - Nodes must be able to reach each other over TCP (NCCL communication)
 - A shared filesystem between nodes **or** willingness to copy data manually
