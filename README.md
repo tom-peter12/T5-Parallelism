@@ -2,6 +2,8 @@
 
 Benchmarking suite comparing distributed training strategies on **T5-Large** using **Megatron-DeepSpeed**. All strategies run the same pre-training objective (T5 span-corruption masked language modelling) on the **XSum corpus**, with identical model architecture and hyperparameters, so throughput numbers are directly comparable.
 
+Project slides are available in the [T5-Parallelism presentation](docs/T5-Parallelism.pdf).
+
 ## Strategies
 
 | Strategy | Script | Default port | Parallelism |
@@ -27,6 +29,8 @@ Benchmarking suite comparing distributed training strategies on **T5-Large** usi
 T5-Parallelism/
 ├── requirements.txt                    # Python deps (deepspeed, transformers, wandb, …)
 ├── MEGATRON.md                         # Detailed Apex / DeepSpeed build guide
+├── docs/
+│   └── T5-Parallelism.pdf              # Project presentation slides
 ├── patches/
 │   ├── megatron_t5_fixes.patch         # Bug fixes applied to Megatron-DeepSpeed
 │   └── 0001-fix-make-Megatron-compatible-with-t5-pipeline-parall.patch
